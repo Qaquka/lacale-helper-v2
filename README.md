@@ -1,116 +1,90 @@
-# La Cale Helper v2 — Audit & Déploiement
+# La Cale Helper v2 — Déploiement NAS (Docker) + mode GitHub Pages
 
-Ce dépôt est une **exportation HTTrack** d'une application front existante.
+Ce dépôt est une **exportation statique HTTrack** (front Vue pré-buildé, sans sources `src/`).
 
-## 1) Audit du repo
+## Pourquoi GitHub Pages casse pour l’analyse vidéo
+L’app tente un import dynamique d’un chunk MediaInfo/WASM (`mediainfo-*.js`). Sur GitHub Pages, si le chunk n’est pas servi exactement, la fallback 404 peut renvoyer `index.html` au lieu du JS, ce qui casse l’analyse vidéo.
 
-### Arborescence observée
-- `index.html`
-- `404.html` (ajouté pour fallback GitHub Pages)
-- `favicon.svg`
-- `assets/index-Ddv4Ao2m.js`
-- `assets/index-BXI7GdG3.css`
-
-### Déductions techniques
-- **Framework** : Vue 3 (présence de signatures `@vue/shared v3.5.27` dans le bundle JS).
-- **Build tool probable** : Vite (structure des assets hashés + bootstrap modulepreload typique).
-- **Style** : Tailwind CSS (classes utilitaires et reset Tailwind dans le CSS bundle).
-- **Routing** : pas de sources disponibles, donc impossible de confirmer `vue-router`; l'app est au minimum une SPA montée dans `#app`.
-- **API externes visibles** : TMDB (`https://api.themoviedb.org/3`) et images TMDB (`https://image.tmdb.org/t/p/w500`).
-
-### Points sensibles déploiement
-- `index.html` contient `<base href="/lacale-helper-v2/">` :
-  - ✅ adapté à GitHub Pages (repo project pages),
-  - ⚠️ à prendre en compte en Docker (servir sous `/lacale-helper-v2/`, ou modifier le `base href`).
-- Le correctif du bouton Home/logo est volontairement injecté en **script inline dans `index.html`** (avant le bundle) pour éviter toute édition directe du JS minifié Vite, source de collisions de noms globales et d'écrans noirs.
-- Absence de code source (`src/`, `package.json`) : on déploie une version **statique prébuildée**, sans rebuild local.
-- Vérifier la cohérence `index.html` ↔ `assets/` : tout chunk référencé (scripts modules, modulepreload, imports dynamiques) doit exister dans le dépôt, sinon le déploiement doit échouer via les tests.
-- SPA refresh : il faut une stratégie fallback vers `index.html`/`404.html` selon l'hébergeur.
-- CSP : aucune CSP déclarée dans `index.html`; si vous en ajoutez une stricte, autoriser au minimum TMDB + éventuels CDN.
+➡️ Conclusion: GitHub Pages reste utile en **mode NFO only**, mais pour un workflow fiable d’analyse vidéo il faut un backend local (NAS/Docker) avec `mediainfo` natif.
 
 ---
 
-## 2) Comparaison avec le “premier” projet
+## Architectures possibles
 
-### Ce qui a pu être comparé ici
-Dans ce repo local, l'historique Git montre 2 commits :
-1. import HTTrack,
-2. ajout d'un `<base href="/lacale-helper-v2/">`.
+### Option A — Tout front-only (GitHub Pages)
+- Analyse via chunks wasm côté navigateur.
+- ✅ Simple à héberger.
+- ❌ Fragile sur export statique (chunks/paths/fallback), non fiable pour gros fichiers.
 
-Donc la différence vérifiable localement est :
-- **Ajout du base path** dans `index.html`.
+### Option B — Front statique + API MediaInfo (Node/Python) + Nginx reverse proxy
+- Le front appelle `POST /api/analyze`.
+- L’API écrit un temp file, exécute `mediainfo --Output=JSON`, renvoie JSON + NFO.
+- ✅ Fiable sur NAS (binaire mediainfo natif), pas de CORS via reverse proxy.
+- ✅ Ne nécessite pas de patch du bundle minifié.
 
-### Ce qu'il manque pour une comparaison complète
-Je n'ai pas accès à votre ancien repo/ancienne version dans cet environnement, donc je ne peux pas établir automatiquement :
-- diff UI,
-- diff logique métier,
-- diff endpoints complets,
-- diff bundles détaillé ancien vs nouveau.
+### Option C — Service externe distant (autre machine)
+- API séparée de l’hébergement front.
+- ✅ Flexible.
+- ❌ Plus de configuration réseau/sécurité/CORS.
 
-➡️ Si vous fournissez le dépôt/commit de référence, je peux produire un diff exhaustif.
+## Choix retenu
+**Option B**: Nginx + API FastAPI dockerisée avec `mediainfo` installé dans le conteneur API.
 
 ---
 
-## 3) Modes de déploiement
+## Stack implémentée
 
-## A) GitHub Pages (statique)
+- `web` (Nginx): sert le front statique sur `http://<NAS>:8080/lacale-helper-v2/`.
+- `api` (FastAPI): endpoint `POST /api/analyze` (multipart).
+- Reverse proxy Nginx: `/api/* -> api:8000/api/*` (pas de CORS côté navigateur LAN).
 
-Ce repo est déjà prêt pour un déploiement statique avec base path `/lacale-helper-v2/`.
+### Sécurité et limites API
+- Extensions acceptées: `.mkv`, `.mp4`, `.avi`.
+- Taille max: `MAX_UPLOAD_MB` (par défaut 4096 MB).
+- Fichier stocké en temporaire dans `/tmp`, supprimé après analyse.
+- `client_max_body_size` Nginx aligné à 4096m.
 
-### Pré-requis
-- Repo GitHub nommé `lacale-helper-v2` (ou adapter le `base href` sinon).
-- Activer GitHub Pages via Actions (workflow inclus ci-dessous).
+---
 
-### Étapes
-1. Push de la branche `deploy`.
-2. Vérifier l’exécution du workflow `.github/workflows/pages.yml`.
-3. Ouvrir l’URL Pages générée.
+## Lancer sur NAS
 
-### SPA fallback
-- `404.html` (copie de `index.html`) est inclus pour gérer les refresh sur routes client potentielles.
-
-## B) Docker (Nginx)
-
-Le mode Docker sert l’application sous `/lacale-helper-v2/` pour rester cohérent avec le `base href`.
-
-### Lancer
 ```bash
 docker compose up -d --build
 ```
 
-### Accéder
-- http://localhost:8080/ (redirige vers `/lacale-helper-v2/`)
-- http://localhost:8080/lacale-helper-v2/
+### Vérifications rapides
+```bash
+curl -s http://localhost:8080/api/health
+# => {"status":"ok"}
+```
 
-### SPA fallback
-- `nginx.conf` utilise `try_files` vers `/lacale-helper-v2/index.html`.
+Puis ouvrir:
+- `http://localhost:8080/lacale-helper-v2/`
 
----
-
-## 4) Checklist de validation
-
-### Validation fonctionnelle
-- [ ] La page charge sans erreur 404 sur JS/CSS.
-- [ ] Le favicon s’affiche.
-- [ ] Les interactions principales de l’app fonctionnent.
-- [ ] Les appels TMDB passent (vérifier onglet Network).
-
-### Validation GitHub Pages
-- [ ] URL Pages en HTTPS accessible.
-- [ ] Refresh manuel sur une route (si route client) ne casse pas l’affichage.
-- [ ] Aucun asset ne pointe vers un mauvais préfixe.
-
-### Validation Docker
-- [ ] `docker compose up -d --build` passe.
-- [ ] `curl -I http://localhost:8080/` retourne une redirection vers `/lacale-helper-v2/`.
-- [ ] `curl -I http://localhost:8080/lacale-helper-v2/` retourne `200`.
-- [ ] Refresh dans le navigateur conserve l’affichage.
+Vous avez un panneau **“Mode API MediaInfo (Docker/NAS)”** sous l’app:
+- upload / drag&drop vidéo,
+- résultat `MediaInfo JSON`,
+- NFO généré (copiable).
 
 ---
 
-## Fichiers de déploiement ajoutés
-- `Dockerfile`
-- `docker-compose.yml`
-- `nginx.conf`
-- `.github/workflows/pages.yml`
-- `404.html`
+## Tests
+
+### Front / statique
+```bash
+node tests/base-links.test.js
+node tests/no-missing-chunks.test.js
+node tests/source-detection.test.js
+```
+
+### API
+```bash
+python -m pip install -r api/requirements-dev.txt
+PYTHONPATH=api pytest -q api/tests
+```
+
+---
+
+## Note importante
+- **Aucun patch manuel du bundle minifié** `assets/index-*.js` pour cette feature.
+- L’intégration front API est faite via `index.html` (scripts encapsulés IIFE), pour éviter les collisions de symboles et les écrans noirs.
