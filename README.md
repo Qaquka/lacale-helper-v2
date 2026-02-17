@@ -34,7 +34,7 @@ L’app tente un import dynamique d’un chunk MediaInfo/WASM (`mediainfo-*.js`)
 
 ## Stack implémentée
 
-- `web` (Nginx): sert le front statique sur `http://<NAS>:8080/lacale-helper-v2/`.
+- `web` (Nginx): sert le front statique sur `http://<NAS>:${WEB_PORT}/lacale-helper-v2/` (défaut 8088).
 - `api` (FastAPI): endpoint `POST /api/analyze` (multipart).
 - Reverse proxy Nginx: `/api/* -> api:8000/api/*` (pas de CORS côté navigateur LAN).
 
@@ -49,17 +49,31 @@ L’app tente un import dynamique d’un chunk MediaInfo/WASM (`mediainfo-*.js`)
 ## Lancer sur NAS
 
 ```bash
+cp .env.example .env
+# optionnel: modifier WEB_PORT=8090 si 8088 est déjà pris
 docker compose up -d --build
 ```
 
 ### Vérifications rapides
 ```bash
-curl -s http://localhost:8080/api/health
+curl -s http://localhost:${WEB_PORT:-8088}/api/health
 # => {"status":"ok"}
 ```
 
 Puis ouvrir:
-- `http://localhost:8080/lacale-helper-v2/`
+- `http://localhost:${WEB_PORT:-8088}/lacale-helper-v2/`
+
+
+### Vérifier l’analyse vidéo API
+```bash
+curl -s -F "file=@/chemin/video.mkv" http://localhost:${WEB_PORT:-8088}/api/analyze | head
+# la sortie doit contenir "media_info_json" et "nfo_text"
+```
+
+### Vérifier les assets (pas de 403)
+```bash
+curl -I http://localhost:${WEB_PORT:-8088}/lacale-helper-v2/assets/index-Ddv4Ao2m.js
+```
 
 Vous avez un panneau **“Mode API MediaInfo (Docker/NAS)”** sous l’app:
 - upload / drag&drop vidéo,

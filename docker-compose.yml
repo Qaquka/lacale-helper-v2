@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
     container_name: lacale-helper-v2-web
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8088}:80"
     depends_on:
       - api
     restart: unless-stopped
@@ -18,5 +18,5 @@ services:
       dockerfile: api/Dockerfile
     container_name: lacale-helper-v2-api
     environment:
-      - MAX_UPLOAD_MB=4096
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-4096}
     restart: unless-stopped

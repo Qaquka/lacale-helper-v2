@@ -11,6 +11,7 @@ assert.ok(indexHtml.includes("a[href=\"/\"]"), 'Home link interception should ta
 assert.ok(indexHtml.includes("getAttribute('href') || './'"), 'Base href fallback should use "./"');
 assert.ok(indexHtml.includes("new URL('./', baseValue)"), 'Home link should resolve to base root');
 assert.ok(indexHtml.includes('window.location.assign'), 'Home link navigation assignment is missing');
+assert.ok(indexHtml.includes("window.addEventListener('unhandledrejection'"), 'MediaInfo unhandledrejection guard is missing');
 
 // Guard 2: assets remain unchanged.
 assert.ok(
