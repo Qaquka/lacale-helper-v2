@@ -9,6 +9,325 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>La Cale - Upload Helper</title>
+    <script>
+      (() => {
+        document.addEventListener(
+          'click',
+          (event) => {
+            const anchor = event.target.closest('a[href="/"]');
+            if (!anchor) return;
+
+            event.preventDefault();
+            const baseValue = document.querySelector('base')?.getAttribute('href') || './';
+            window.location.assign(new URL('./', baseValue).toString());
+          },
+          true
+        );
+      })();
+    </script>
+    <style>
+      .api-panel {
+        margin: 16px;
+        padding: 16px;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      .api-drop {
+        margin-top: 8px;
+        border: 1px dashed #475569;
+        border-radius: 10px;
+        padding: 14px;
+        cursor: pointer;
+      }
+      .api-result {
+        margin-top: 12px;
+        white-space: pre-wrap;
+        max-height: 280px;
+        overflow: auto;
+        background: #020617;
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 12px;
+      }
+      .api-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .api-btn {
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #111827;
+        color: #e2e8f0;
+        cursor: pointer;
+      }
+      .api-status { margin-top: 8px; font-size: 13px; color: #93c5fd; }
+    </style>
+    <script>
+      (() => {
+        const __LC_WASM_MODE_SIGNATURE = 'LC_MEDIAINFO_WASM_MODE_V1';
+        const ALLOWED = ['.mkv', '.mp4', '.avi'];
+        const MEDIAINFO_CDN_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/mediainfo.min.js';
+        const MEDIAINFO_WASM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/MediaInfoModule.wasm';
+        let wasmModeEnabled = false;
+        let mediaInfoAnalyzer = null;
+
+        const ext = (name) => {
+          const i = name.lastIndexOf('.');
+          return i >= 0 ? name.slice(i).toLowerCase() : '';
+        };
+
+        const setStatus = (el, msg) => {
+          if (el) el.textContent = msg;
+        };
+
+        const createPanel = () => {
+          const root = document.createElement('section');
+          root.className = 'api-panel';
+          root.innerHTML = `
+            <h3 style="margin:0 0 8px 0;">Mode MediaInfo WASM (CDN)</h3>
+            <p style="margin:0 0 10px 0;color:#94a3b8;">Analyse locale navigateur via mediainfo.js.org (sans chunk Vite interne).</p>
+            <div class="api-row">
+              <input id="api-file-input" type="file" accept=".mkv,.mp4,.avi,video/*" />
+              <button id="api-analyze-btn" class="api-btn" type="button">Analyser (WASM)</button>
+              <button id="api-copy-nfo" class="api-btn" type="button">Copier NFO</button>
+            </div>
+            <div id="api-drop-zone" class="api-drop">Glissez-déposez un fichier vidéo ici</div>
+            <div id="api-status" class="api-status"></div>
+            <details style="margin-top:10px;">
+              <summary>MediaInfo JSON</summary>
+              <pre id="api-json" class="api-result"></pre>
+            </details>
+            <details style="margin-top:10px;" open>
+              <summary>NFO généré</summary>
+              <pre id="api-nfo" class="api-result"></pre>
+            </details>
+          `;
+          return root;
+        };
+
+        const findNfoTextarea = () => {
+          const textareas = [...document.querySelectorAll('textarea')];
+          return textareas.find((ta) => {
+            const ctx = `${ta.placeholder || ''} ${ta.id || ''} ${ta.name || ''}`.toLowerCase();
+            return ctx.includes('nfo') || ctx.includes('coller');
+          }) || null;
+        };
+
+        const injectNfoToApp = (nfoText) => {
+          const target = findNfoTextarea();
+          if (!target) return false;
+          target.value = nfoText;
+          target.dispatchEvent(new Event('input', { bubbles: true }));
+          target.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        };
+
+        const hideMediaInfoWarnings = () => {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          const bad = [];
+          while (walker.nextNode()) {
+            const value = String(walker.currentNode.nodeValue || '').toLowerCase();
+            if (value.includes('module mediainfo') || value.includes('mediainfo indisponible')) {
+              bad.push(walker.currentNode.parentElement);
+            }
+          }
+          bad.forEach((el) => {
+            if (el) el.style.display = 'none';
+          });
+        };
+
+        const toNfoLikeText = (rawJsonText) => {
+          try {
+            const parsed = JSON.parse(rawJsonText);
+            const tracks = parsed?.media?.track || [];
+            const byType = (type) => tracks.find((t) => String(t['@type'] || '').toLowerCase() === type) || {};
+            const g = byType('general');
+            const v = byType('video');
+            const a = byType('audio');
+            return [
+              'General',
+              `Complete name                            : ${g.CompleteName || ''}`,
+              `Format                                   : ${g.Format || ''}`,
+              `File size                                : ${g.FileSize_String || g.FileSize || ''}`,
+              `Duration                                 : ${g.Duration_String3 || g.Duration_String || g.Duration || ''}`,
+              '',
+              'Video',
+              `Format                                   : ${v.Format || ''}`,
+              `Width                                    : ${v.Width_String || v.Width || ''}`,
+              `Height                                   : ${v.Height_String || v.Height || ''}`,
+              `Frame rate                               : ${v.FrameRate_String || v.FrameRate || ''}`,
+              '',
+              'Audio',
+              `Format                                   : ${a.Format || ''}`,
+              `Language                                 : ${a.Language_String3 || a.Language || ''}`,
+            ].join('\n').trim() + '\n';
+          } catch {
+            return rawJsonText;
+          }
+        };
+
+        const getChunk = async (file, offset, length) => {
+          const chunk = file.slice(offset, offset + length);
+          const buffer = await chunk.arrayBuffer();
+          return new Uint8Array(buffer);
+        };
+
+        const createAnalyzer = async () => {
+          if (mediaInfoAnalyzer) return mediaInfoAnalyzer;
+          const module = await import(MEDIAINFO_CDN_URL);
+          const MediaInfoFactory = module.default || module;
+          mediaInfoAnalyzer = await MediaInfoFactory({
+            format: 'JSON',
+            locateFile: () => MEDIAINFO_WASM_URL,
+          });
+          return mediaInfoAnalyzer;
+        };
+
+        const analyzeWithWasm = async (file) => {
+          const analyzer = await createAnalyzer();
+          return analyzer.analyzeData(
+            () => file.size,
+            (size, offset) => getChunk(file, offset, size)
+          );
+        };
+
+        const handleVideoFile = async (file, ui, origin = 'manual') => {
+          if (!file) {
+            setStatus(ui.status, 'Aucun fichier sélectionné.');
+            return;
+          }
+          const extension = ext(file.name);
+          if (!ALLOWED.includes(extension)) {
+            setStatus(ui.status, `Extension non autorisée: ${extension || '(none)'}`);
+            return;
+          }
+
+          setStatus(ui.status, `WASM mode: analyse en cours (${origin}) – ${file.name}`);
+          ui.json.textContent = '';
+          ui.nfo.textContent = '';
+
+          try {
+            const jsonText = await analyzeWithWasm(file);
+            ui.json.textContent = jsonText;
+            const nfoText = toNfoLikeText(jsonText);
+            ui.nfo.textContent = nfoText;
+            const injected = injectNfoToApp(nfoText);
+            hideMediaInfoWarnings();
+            setStatus(
+              ui.status,
+              `${__LC_WASM_MODE_SIGNATURE}: analyse OK (${Math.round(file.size / (1024 * 1024))} MB). ${injected ? 'NFO injecté dans l\'app.' : 'Injection NFO impossible, utilisez le panneau.'}`
+            );
+          } catch (err) {
+            setStatus(ui.status, `Erreur WASM: ${err.message || err}`);
+          }
+        };
+
+        const setupCaptureInterceptors = (ui) => {
+          const looksLikeVideoFile = (file) => !!file && ALLOWED.includes(ext(file.name || ''));
+
+          document.addEventListener('change', (event) => {
+            if (!wasmModeEnabled) return;
+            const input = event.target;
+            if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
+            const file = input.files && input.files[0];
+            if (!looksLikeVideoFile(file)) return;
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            handleVideoFile(file, ui, 'input-capture');
+          }, true);
+
+          ['drop', 'dragover', 'dragenter'].forEach((type) => {
+            document.addEventListener(type, (event) => {
+              if (!wasmModeEnabled) return;
+              const dt = event.dataTransfer;
+              if (!dt || !dt.files || !dt.files[0] || !looksLikeVideoFile(dt.files[0])) return;
+              event.preventDefault();
+              if (type === 'drop') {
+                event.stopImmediatePropagation();
+                handleVideoFile(dt.files[0], ui, 'drop-capture');
+              }
+            }, true);
+          });
+        };
+
+        window.addEventListener('unhandledrejection', (event) => {
+          if (!wasmModeEnabled) return;
+          const reasonText = String(event.reason && (event.reason.message || event.reason) || '').toLowerCase();
+          if (reasonText.includes('mediainfo')) {
+            event.preventDefault();
+            hideMediaInfoWarnings();
+          }
+        });
+
+        document.addEventListener('DOMContentLoaded', async () => {
+          const appRoot = document.getElementById('app');
+          if (!appRoot || document.getElementById('api-file-input')) return;
+
+          const panel = createPanel();
+          appRoot.insertAdjacentElement('afterend', panel);
+
+          const input = document.getElementById('api-file-input');
+          const button = document.getElementById('api-analyze-btn');
+          const copyNfo = document.getElementById('api-copy-nfo');
+          const dropZone = document.getElementById('api-drop-zone');
+          const json = document.getElementById('api-json');
+          const nfo = document.getElementById('api-nfo');
+          const status = document.getElementById('api-status');
+
+          const ui = { json, nfo, status };
+
+          try {
+            await createAnalyzer();
+            wasmModeEnabled = true;
+            setStatus(status, `${__LC_WASM_MODE_SIGNATURE}: actif (CDN + WASM).`);
+          } catch (err) {
+            wasmModeEnabled = false;
+            setStatus(status, `WASM indisponible (${err.message || err}). Fallback: panneau manuel NFO only.`);
+          }
+
+          button.addEventListener('click', () => handleVideoFile(input.files[0], ui, 'panel-button'));
+          input.addEventListener('change', () => {
+            if (input.files[0]) setStatus(status, `Fichier prêt: ${input.files[0].name}`);
+          });
+          copyNfo.addEventListener('click', async () => {
+            if (!nfo.textContent) return;
+            try {
+              await navigator.clipboard.writeText(nfo.textContent);
+              setStatus(status, 'NFO copié dans le presse-papiers.');
+            } catch {
+              setStatus(status, 'Impossible de copier automatiquement.');
+            }
+          });
+
+          ['dragenter', 'dragover'].forEach((evt) => {
+            dropZone.addEventListener(evt, (e) => {
+              e.preventDefault();
+              dropZone.style.borderColor = '#22c55e';
+            });
+          });
+          ['dragleave', 'drop'].forEach((evt) => {
+            dropZone.addEventListener(evt, (e) => {
+              e.preventDefault();
+              dropZone.style.borderColor = '#475569';
+            });
+          });
+          dropZone.addEventListener('drop', (e) => {
+            const file = e.dataTransfer?.files?.[0];
+            if (!file) return;
+            handleVideoFile(file, ui, 'panel-drop');
+          });
+
+          setupCaptureInterceptors(ui);
+
+          const observer = new MutationObserver(() => {
+            if (wasmModeEnabled) hideMediaInfoWarnings();
+          });
+          observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+        });
+      })();
+    </script>
     <script type="module" crossorigin src="assets/index-Ddv4Ao2m.js"></script>
     <link rel="stylesheet" crossorigin href="assets/index-BXI7GdG3.css">
   </head>
