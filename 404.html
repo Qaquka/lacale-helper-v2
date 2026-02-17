@@ -9,22 +9,6 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>La Cale - Upload Helper</title>
-    <script>
-      (() => {
-        document.addEventListener(
-          'click',
-          (event) => {
-            const anchor = event.target.closest('a[href="/"]');
-            if (!anchor) return;
-
-            event.preventDefault();
-            const baseValue = document.querySelector('base')?.getAttribute('href') || './';
-            window.location.assign(new URL('./', baseValue).toString());
-          },
-          true
-        );
-      })();
-    </script>
     <script type="module" crossorigin src="assets/index-Ddv4Ao2m.js"></script>
     <link rel="stylesheet" crossorigin href="assets/index-BXI7GdG3.css">
   </head>
