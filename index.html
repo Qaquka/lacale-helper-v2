@@ -9,6 +9,45 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>La Cale - Upload Helper</title>
+    <script>
+      (() => {
+        const PROJECT_ROOT_PREFIX = '/lacale-helper-v2/';
+
+        const resolveProjectRoot = () => {
+          const baseHref = document.querySelector('base')?.href || document.baseURI || '/';
+          return new URL('./', baseHref).href;
+        };
+
+        const resolveProjectPath = (absolutePath) => {
+          const baseHref = document.querySelector('base')?.href || document.baseURI || '/';
+          const relativePath = absolutePath.replace(/^\/lacale-helper-v2\/?/, './');
+          return new URL(relativePath || './', baseHref).href;
+        };
+
+        document.addEventListener(
+          'click',
+          (event) => {
+            const anchor = event.target.closest('a[href]');
+            if (!anchor) return;
+
+            const href = anchor.getAttribute('href');
+            if (!href || href.startsWith('#') || href.startsWith('http') || href.startsWith('//')) return;
+
+            if (href === '/') {
+              event.preventDefault();
+              window.location.assign(resolveProjectRoot());
+              return;
+            }
+
+            if (href.startsWith(PROJECT_ROOT_PREFIX)) {
+              event.preventDefault();
+              window.location.assign(resolveProjectPath(href));
+            }
+          },
+          true
+        );
+      })();
+    </script>
     <script type="module" crossorigin src="assets/index-Ddv4Ao2m.js"></script>
     <link rel="stylesheet" crossorigin href="assets/index-BXI7GdG3.css">
   </head>

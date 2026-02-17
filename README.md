@@ -22,6 +22,7 @@ Ce dépôt est une **exportation HTTrack** d'une application front existante.
 - `index.html` contient `<base href="/lacale-helper-v2/">` :
   - ✅ adapté à GitHub Pages (repo project pages),
   - ⚠️ à prendre en compte en Docker (servir sous `/lacale-helper-v2/`, ou modifier le `base href`).
+- Le correctif du bouton Home/logo est volontairement injecté en **script inline dans `index.html`** (avant le bundle) pour éviter toute édition directe du JS minifié Vite, source de collisions de noms globales et d'écrans noirs.
 - Absence de code source (`src/`, `package.json`) : on déploie une version **statique prébuildée**, sans rebuild local.
 - SPA refresh : il faut une stratégie fallback vers `index.html`/`404.html` selon l'hébergeur.
 - CSP : aucune CSP déclarée dans `index.html`; si vous en ajoutez une stricte, autoriser au minimum TMDB + éventuels CDN.
