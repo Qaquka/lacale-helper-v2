@@ -9,6 +9,180 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>La Cale - Upload Helper</title>
+    <script>
+      (() => {
+        document.addEventListener(
+          'click',
+          (event) => {
+            const anchor = event.target.closest('a[href="/"]');
+            if (!anchor) return;
+
+            event.preventDefault();
+            const baseValue = document.querySelector('base')?.getAttribute('href') || './';
+            window.location.assign(new URL('./', baseValue).toString());
+          },
+          true
+        );
+      })();
+    </script>
+    <style>
+      .api-panel {
+        margin: 16px;
+        padding: 16px;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      .api-drop {
+        margin-top: 8px;
+        border: 1px dashed #475569;
+        border-radius: 10px;
+        padding: 14px;
+        cursor: pointer;
+      }
+      .api-result {
+        margin-top: 12px;
+        white-space: pre-wrap;
+        max-height: 280px;
+        overflow: auto;
+        background: #020617;
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 12px;
+      }
+      .api-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .api-btn {
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #111827;
+        color: #e2e8f0;
+        cursor: pointer;
+      }
+      .api-status { margin-top: 8px; font-size: 13px; color: #93c5fd; }
+    </style>
+    <script>
+      (() => {
+        const API_URL = '/api/analyze';
+        const ALLOWED = ['.mkv', '.mp4', '.avi'];
+
+        const ext = (name) => {
+          const i = name.lastIndexOf('.');
+          return i >= 0 ? name.slice(i).toLowerCase() : '';
+        };
+
+        const createPanel = () => {
+          const root = document.createElement('section');
+          root.className = 'api-panel';
+          root.innerHTML = `
+            <h3 style="margin:0 0 8px 0;">Mode API MediaInfo (Docker/NAS)</h3>
+            <p style="margin:0 0 10px 0;color:#94a3b8;">Déposez une vidéo (.mkv, .mp4, .avi) pour obtenir MediaInfo JSON + NFO.</p>
+            <div class="api-row">
+              <input id="api-file-input" type="file" accept=".mkv,.mp4,.avi,video/*" />
+              <button id="api-analyze-btn" class="api-btn" type="button">Analyser via /api/analyze</button>
+              <button id="api-copy-nfo" class="api-btn" type="button">Copier NFO</button>
+            </div>
+            <div id="api-drop-zone" class="api-drop">Glissez-déposez un fichier vidéo ici</div>
+            <div id="api-status" class="api-status"></div>
+            <details style="margin-top:10px;">
+              <summary>MediaInfo JSON</summary>
+              <pre id="api-json" class="api-result"></pre>
+            </details>
+            <details style="margin-top:10px;" open>
+              <summary>NFO généré</summary>
+              <pre id="api-nfo" class="api-result"></pre>
+            </details>
+          `;
+          return root;
+        };
+
+        const setStatus = (el, msg) => { el.textContent = msg; };
+
+        const analyzeFile = async (file, ui) => {
+          if (!file) {
+            setStatus(ui.status, 'Aucun fichier sélectionné.');
+            return;
+          }
+          if (!ALLOWED.includes(ext(file.name))) {
+            setStatus(ui.status, `Extension non autorisée: ${ext(file.name) || '(none)'}`);
+            return;
+          }
+
+          const form = new FormData();
+          form.append('file', file, file.name);
+
+          setStatus(ui.status, `Upload et analyse en cours: ${file.name}`);
+          ui.json.textContent = '';
+          ui.nfo.textContent = '';
+
+          try {
+            const res = await fetch(API_URL, { method: 'POST', body: form });
+            const data = await res.json();
+            if (!res.ok) {
+              throw new Error(data.detail || `Erreur API (${res.status})`);
+            }
+            ui.json.textContent = JSON.stringify(data.media_info_json, null, 2);
+            ui.nfo.textContent = data.nfo_text || '';
+            setStatus(ui.status, `Analyse terminée (${Math.round((data.size_bytes || 0) / (1024 * 1024))} MB).`);
+          } catch (err) {
+            setStatus(ui.status, `Erreur: ${err.message}. Sur GitHub Pages, /api n'existe pas (mode NFO only).`);
+          }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+          const appRoot = document.getElementById('app');
+          if (!appRoot || document.getElementById('api-file-input')) return;
+
+          const panel = createPanel();
+          appRoot.insertAdjacentElement('afterend', panel);
+
+          const input = document.getElementById('api-file-input');
+          const button = document.getElementById('api-analyze-btn');
+          const copyNfo = document.getElementById('api-copy-nfo');
+          const dropZone = document.getElementById('api-drop-zone');
+          const json = document.getElementById('api-json');
+          const nfo = document.getElementById('api-nfo');
+          const status = document.getElementById('api-status');
+
+          const ui = { json, nfo, status };
+
+          button.addEventListener('click', () => analyzeFile(input.files[0], ui));
+          input.addEventListener('change', () => {
+            if (input.files[0]) setStatus(status, `Fichier prêt: ${input.files[0].name}`);
+          });
+          copyNfo.addEventListener('click', async () => {
+            if (!nfo.textContent) return;
+            try {
+              await navigator.clipboard.writeText(nfo.textContent);
+              setStatus(status, 'NFO copié dans le presse-papiers.');
+            } catch {
+              setStatus(status, 'Impossible de copier automatiquement.');
+            }
+          });
+
+          ['dragenter', 'dragover'].forEach((evt) => {
+            dropZone.addEventListener(evt, (e) => {
+              e.preventDefault();
+              dropZone.style.borderColor = '#22c55e';
+            });
+          });
+          ['dragleave', 'drop'].forEach((evt) => {
+            dropZone.addEventListener(evt, (e) => {
+              e.preventDefault();
+              dropZone.style.borderColor = '#475569';
+            });
+          });
+          dropZone.addEventListener('drop', (e) => {
+            const file = e.dataTransfer?.files?.[0];
+            if (!file) return;
+            analyzeFile(file, ui);
+          });
+        });
+      })();
+    </script>
     <script type="module" crossorigin src="assets/index-Ddv4Ao2m.js"></script>
     <link rel="stylesheet" crossorigin href="assets/index-BXI7GdG3.css">
   </head>
