@@ -11,38 +11,15 @@
     <title>La Cale - Upload Helper</title>
     <script>
       (() => {
-        const PROJECT_ROOT_PREFIX = '/lacale-helper-v2/';
-
-        const resolveProjectRoot = () => {
-          const baseHref = document.querySelector('base')?.href || document.baseURI || '/';
-          return new URL('./', baseHref).href;
-        };
-
-        const resolveProjectPath = (absolutePath) => {
-          const baseHref = document.querySelector('base')?.href || document.baseURI || '/';
-          const relativePath = absolutePath.replace(/^\/lacale-helper-v2\/?/, './');
-          return new URL(relativePath || './', baseHref).href;
-        };
-
         document.addEventListener(
           'click',
           (event) => {
-            const anchor = event.target.closest('a[href]');
+            const anchor = event.target.closest('a[href="/"]');
             if (!anchor) return;
 
-            const href = anchor.getAttribute('href');
-            if (!href || href.startsWith('#') || href.startsWith('http') || href.startsWith('//')) return;
-
-            if (href === '/') {
-              event.preventDefault();
-              window.location.assign(resolveProjectRoot());
-              return;
-            }
-
-            if (href.startsWith(PROJECT_ROOT_PREFIX)) {
-              event.preventDefault();
-              window.location.assign(resolveProjectPath(href));
-            }
+            event.preventDefault();
+            const baseValue = document.querySelector('base')?.getAttribute('href') || './';
+            window.location.assign(new URL('./', baseValue).toString());
           },
           true
         );

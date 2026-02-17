@@ -3,18 +3,16 @@ const path = require('path');
 const assert = require('assert');
 
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const bundle = fs.readFileSync(path.join(__dirname, '..', 'assets', 'index-Ddv4Ao2m.js'), 'utf8');
 
 // Guard 1: lightweight home-link patch is injected in index.html (not in bundle).
 assert.ok(indexHtml.includes('(() => {'), 'Inline home-link patch is missing');
-assert.ok(indexHtml.includes("const PROJECT_ROOT_PREFIX = '/lacale-helper-v2/';"), 'Project root prefix guard is missing');
-assert.ok(indexHtml.includes("if (href === '/')"), 'Home link interception for "/" is missing');
-assert.ok(indexHtml.includes('window.location.assign(resolveProjectRoot())'), 'Home link should navigate to project base');
+assert.ok(indexHtml.includes("a[href=\"/\"]"), 'Home link interception should target only a[href="/"]');
+assert.ok(indexHtml.includes("getAttribute('href') || './'"), 'Base href fallback should use "./"');
+assert.ok(indexHtml.includes("new URL('./', baseValue)"), 'Home link should resolve to base root');
+assert.ok(indexHtml.includes('window.location.assign'), 'Home link navigation assignment is missing');
 
-// Guard 2: optional project-root absolute links are normalized via base href.
-assert.ok(indexHtml.includes('if (href.startsWith(PROJECT_ROOT_PREFIX))'), 'Project path interception is missing');
-assert.ok(indexHtml.includes('window.location.assign(resolveProjectPath(href))'), 'Project path rewrite navigation is missing');
-
-// Guard 3: assets remain unchanged.
+// Guard 2: assets remain unchanged.
 assert.ok(
   indexHtml.includes('src="assets/index-Ddv4Ao2m.js"'),
   'index.html script asset path was unexpectedly changed'
@@ -24,13 +22,18 @@ assert.ok(
   'index.html stylesheet asset path was unexpectedly changed'
 );
 
-// Guard 4: patch execution order is safe (before module bundle).
+// Guard 3: patch execution order is safe (before module bundle).
 assert.ok(
-  indexHtml.indexOf('window.location.assign(resolveProjectRoot())') < indexHtml.indexOf('src="assets/index-Ddv4Ao2m.js"'),
+  indexHtml.indexOf('window.location.assign') < indexHtml.indexOf('src="assets/index-Ddv4Ao2m.js"'),
   'Home-link patch should be defined before the bundle script'
 );
 
-// Guard 5: simulated GH Pages root resolution stays in project path.
+// Guard 4: ensure previous injected bundle patch symbols are gone.
+assert.ok(!bundle.includes('function Pu(e="./")'), 'Injected Pu helper must not be present in bundle');
+assert.ok(!bundle.includes('function __lhShouldRewrite'), 'Injected rewrite helper must not be present in bundle');
+assert.ok(!bundle.includes('function __lhFixBaseAnchors'), 'Injected anchor fix helper must not be present in bundle');
+
+// Simulate GH Pages base path behavior for home link.
 const resolved = new URL('./', 'https://qaquka.github.io/lacale-helper-v2/').toString();
 assert.strictEqual(resolved, 'https://qaquka.github.io/lacale-helper-v2/');
 
