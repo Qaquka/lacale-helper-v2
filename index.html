@@ -66,48 +66,31 @@
     </style>
     <script>
       (() => {
-        const __LC_NAS_MODE_SIGNATURE = 'LC_NAS_API_MODE_V2';
-        const API_HEALTH_URL = '/api/health';
-        const API_ANALYZE_URL = '/api/analyze';
+        const __LC_WASM_MODE_SIGNATURE = 'LC_MEDIAINFO_WASM_MODE_V1';
         const ALLOWED = ['.mkv', '.mp4', '.avi'];
-        let nasModeEnabled = false;
+        const MEDIAINFO_CDN_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/mediainfo.min.js';
+        const MEDIAINFO_WASM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/MediaInfoModule.wasm';
+        let wasmModeEnabled = false;
+        let mediaInfoAnalyzer = null;
 
         const ext = (name) => {
           const i = name.lastIndexOf('.');
           return i >= 0 ? name.slice(i).toLowerCase() : '';
         };
 
-        const buildMinimalNfo = (mediaInfoJson) => {
-          const tracks = mediaInfoJson?.media?.track || [];
-          const get = (type, key) => {
-            const t = tracks.find((x) => String(x['@type'] || '').toLowerCase() === type);
-            return t ? (t[key] || '') : '';
-          };
-          return [
-            'General',
-            `Format                                   : ${get('general', 'Format')}`,
-            `File size                                : ${get('general', 'FileSize_String') || get('general', 'FileSize')}`,
-            '',
-            'Video',
-            `Format                                   : ${get('video', 'Format')}`,
-            `Width                                    : ${get('video', 'Width_String') || get('video', 'Width')}`,
-            `Height                                   : ${get('video', 'Height_String') || get('video', 'Height')}`,
-            '',
-            'Audio',
-            `Format                                   : ${get('audio', 'Format')}`,
-            `Language                                 : ${get('audio', 'Language_String3') || get('audio', 'Language')}`,
-          ].join('\n').trim() + '\n';
+        const setStatus = (el, msg) => {
+          if (el) el.textContent = msg;
         };
 
         const createPanel = () => {
           const root = document.createElement('section');
           root.className = 'api-panel';
           root.innerHTML = `
-            <h3 style="margin:0 0 8px 0;">Mode API MediaInfo (Docker/NAS)</h3>
-            <p style="margin:0 0 10px 0;color:#94a3b8;">Déposez une vidéo (.mkv, .mp4, .avi) pour obtenir MediaInfo JSON + NFO.</p>
+            <h3 style="margin:0 0 8px 0;">Mode MediaInfo WASM (CDN)</h3>
+            <p style="margin:0 0 10px 0;color:#94a3b8;">Analyse locale navigateur via mediainfo.js.org (sans chunk Vite interne).</p>
             <div class="api-row">
               <input id="api-file-input" type="file" accept=".mkv,.mp4,.avi,video/*" />
-              <button id="api-analyze-btn" class="api-btn" type="button">Analyser via /api/analyze</button>
+              <button id="api-analyze-btn" class="api-btn" type="button">Analyser (WASM)</button>
               <button id="api-copy-nfo" class="api-btn" type="button">Copier NFO</button>
             </div>
             <div id="api-drop-zone" class="api-drop">Glissez-déposez un fichier vidéo ici</div>
@@ -122,10 +105,6 @@
             </details>
           `;
           return root;
-        };
-
-        const setStatus = (el, msg) => {
-          if (el) el.textContent = msg;
         };
 
         const findNfoTextarea = () => {
@@ -149,8 +128,8 @@
           const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
           const bad = [];
           while (walker.nextNode()) {
-            const value = String(walker.currentNode.nodeValue || '');
-            if (value.toLowerCase().includes('module mediainfo') || value.toLowerCase().includes('mediainfo indisponible')) {
+            const value = String(walker.currentNode.nodeValue || '').toLowerCase();
+            if (value.includes('module mediainfo') || value.includes('mediainfo indisponible')) {
               bad.push(walker.currentNode.parentElement);
             }
           }
@@ -159,7 +138,62 @@
           });
         };
 
-        const analyzeFile = async (file, ui, origin = 'manual') => {
+        const toNfoLikeText = (rawJsonText) => {
+          try {
+            const parsed = JSON.parse(rawJsonText);
+            const tracks = parsed?.media?.track || [];
+            const byType = (type) => tracks.find((t) => String(t['@type'] || '').toLowerCase() === type) || {};
+            const g = byType('general');
+            const v = byType('video');
+            const a = byType('audio');
+            return [
+              'General',
+              `Complete name                            : ${g.CompleteName || ''}`,
+              `Format                                   : ${g.Format || ''}`,
+              `File size                                : ${g.FileSize_String || g.FileSize || ''}`,
+              `Duration                                 : ${g.Duration_String3 || g.Duration_String || g.Duration || ''}`,
+              '',
+              'Video',
+              `Format                                   : ${v.Format || ''}`,
+              `Width                                    : ${v.Width_String || v.Width || ''}`,
+              `Height                                   : ${v.Height_String || v.Height || ''}`,
+              `Frame rate                               : ${v.FrameRate_String || v.FrameRate || ''}`,
+              '',
+              'Audio',
+              `Format                                   : ${a.Format || ''}`,
+              `Language                                 : ${a.Language_String3 || a.Language || ''}`,
+            ].join('\n').trim() + '\n';
+          } catch {
+            return rawJsonText;
+          }
+        };
+
+        const getChunk = async (file, offset, length) => {
+          const chunk = file.slice(offset, offset + length);
+          const buffer = await chunk.arrayBuffer();
+          return new Uint8Array(buffer);
+        };
+
+        const createAnalyzer = async () => {
+          if (mediaInfoAnalyzer) return mediaInfoAnalyzer;
+          const module = await import(MEDIAINFO_CDN_URL);
+          const MediaInfoFactory = module.default || module;
+          mediaInfoAnalyzer = await MediaInfoFactory({
+            format: 'JSON',
+            locateFile: () => MEDIAINFO_WASM_URL,
+          });
+          return mediaInfoAnalyzer;
+        };
+
+        const analyzeWithWasm = async (file) => {
+          const analyzer = await createAnalyzer();
+          return analyzer.analyzeData(
+            () => file.size,
+            (size, offset) => getChunk(file, offset, size)
+          );
+        };
+
+        const handleVideoFile = async (file, ui, origin = 'manual') => {
           if (!file) {
             setStatus(ui.status, 'Aucun fichier sélectionné.');
             return;
@@ -170,29 +204,23 @@
             return;
           }
 
-          const form = new FormData();
-          form.append('file', file, file.name);
-
-          setStatus(ui.status, `NAS mode: analyse en cours (${origin}) – ${file.name}`);
+          setStatus(ui.status, `WASM mode: analyse en cours (${origin}) – ${file.name}`);
           ui.json.textContent = '';
           ui.nfo.textContent = '';
 
           try {
-            const res = await fetch(API_ANALYZE_URL, { method: 'POST', body: form });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || `Erreur API (${res.status})`);
-
-            const nfoText = data.nfo_text || buildMinimalNfo(data.media_info_json || {});
-            ui.json.textContent = JSON.stringify(data.media_info_json || {}, null, 2);
+            const jsonText = await analyzeWithWasm(file);
+            ui.json.textContent = jsonText;
+            const nfoText = toNfoLikeText(jsonText);
             ui.nfo.textContent = nfoText;
             const injected = injectNfoToApp(nfoText);
             hideMediaInfoWarnings();
             setStatus(
               ui.status,
-              `NAS mode actif: analyse OK (${Math.round((data.size_bytes || 0) / (1024 * 1024))} MB). ${injected ? 'NFO injecté dans l'app.' : 'Injection NFO impossible, utilisez le panneau.'}`
+              `${__LC_WASM_MODE_SIGNATURE}: analyse OK (${Math.round(file.size / (1024 * 1024))} MB). ${injected ? 'NFO injecté dans l\'app.' : 'Injection NFO impossible, utilisez le panneau.'}`
             );
           } catch (err) {
-            setStatus(ui.status, `Erreur API: ${err.message}`);
+            setStatus(ui.status, `Erreur WASM: ${err.message || err}`);
           }
         };
 
@@ -200,42 +228,32 @@
           const looksLikeVideoFile = (file) => !!file && ALLOWED.includes(ext(file.name || ''));
 
           document.addEventListener('change', (event) => {
-            if (!nasModeEnabled) return;
+            if (!wasmModeEnabled) return;
             const input = event.target;
             if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
             const file = input.files && input.files[0];
             if (!looksLikeVideoFile(file)) return;
             event.stopImmediatePropagation();
-            analyzeFile(file, ui, 'input-capture');
+            event.preventDefault();
+            handleVideoFile(file, ui, 'input-capture');
           }, true);
 
           ['drop', 'dragover', 'dragenter'].forEach((type) => {
             document.addEventListener(type, (event) => {
-              if (!nasModeEnabled) return;
+              if (!wasmModeEnabled) return;
               const dt = event.dataTransfer;
               if (!dt || !dt.files || !dt.files[0] || !looksLikeVideoFile(dt.files[0])) return;
               event.preventDefault();
               if (type === 'drop') {
                 event.stopImmediatePropagation();
-                analyzeFile(dt.files[0], ui, 'drop-capture');
+                handleVideoFile(dt.files[0], ui, 'drop-capture');
               }
             }, true);
           });
         };
 
-        const checkApiHealth = async () => {
-          try {
-            const response = await fetch(API_HEALTH_URL, { cache: 'no-store' });
-            if (!response.ok) return false;
-            const payload = await response.json();
-            return payload && payload.status === 'ok';
-          } catch {
-            return false;
-          }
-        };
-
         window.addEventListener('unhandledrejection', (event) => {
-          if (!nasModeEnabled) return;
+          if (!wasmModeEnabled) return;
           const reasonText = String(event.reason && (event.reason.message || event.reason) || '').toLowerCase();
           if (reasonText.includes('mediainfo')) {
             event.preventDefault();
@@ -259,10 +277,17 @@
           const status = document.getElementById('api-status');
 
           const ui = { json, nfo, status };
-          nasModeEnabled = await checkApiHealth();
-          setStatus(status, nasModeEnabled ? `${__LC_NAS_MODE_SIGNATURE}: API disponible.` : 'Mode NAS inactif: /api/health indisponible (GH Pages = NFO only).');
 
-          button.addEventListener('click', () => analyzeFile(input.files[0], ui, 'panel-button'));
+          try {
+            await createAnalyzer();
+            wasmModeEnabled = true;
+            setStatus(status, `${__LC_WASM_MODE_SIGNATURE}: actif (CDN + WASM).`);
+          } catch (err) {
+            wasmModeEnabled = false;
+            setStatus(status, `WASM indisponible (${err.message || err}). Fallback: panneau manuel NFO only.`);
+          }
+
+          button.addEventListener('click', () => handleVideoFile(input.files[0], ui, 'panel-button'));
           input.addEventListener('change', () => {
             if (input.files[0]) setStatus(status, `Fichier prêt: ${input.files[0].name}`);
           });
@@ -291,13 +316,13 @@
           dropZone.addEventListener('drop', (e) => {
             const file = e.dataTransfer?.files?.[0];
             if (!file) return;
-            analyzeFile(file, ui, 'panel-drop');
+            handleVideoFile(file, ui, 'panel-drop');
           });
 
           setupCaptureInterceptors(ui);
 
           const observer = new MutationObserver(() => {
-            if (nasModeEnabled) hideMediaInfoWarnings();
+            if (wasmModeEnabled) hideMediaInfoWarnings();
           });
           observer.observe(document.body, { subtree: true, childList: true, characterData: true });
         });

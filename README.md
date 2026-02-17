@@ -89,6 +89,7 @@ Vous avez un panneau **“Mode API MediaInfo (Docker/NAS)”** sous l’app:
 node tests/base-links.test.js
 node tests/no-missing-chunks.test.js
 node tests/source-detection.test.js
+node tests/mediainfo-wasm-mode.test.js
 ```
 
 ### API
