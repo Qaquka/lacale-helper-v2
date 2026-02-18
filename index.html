@@ -66,36 +66,84 @@
     </style>
     <script>
       (() => {
-        const __LC_WASM_MODE_SIGNATURE = 'LC_MEDIAINFO_WASM_MODE_V1';
+        const __LC_WASM_MODE_SIGNATURE = 'LC_MEDIAINFO_WASM_MODE_V2';
         const ALLOWED = ['.mkv', '.mp4', '.avi'];
         const MEDIAINFO_LOCAL_ESM_URL = new URL('vendor/mediainfo/index.min.js', document.baseURI).toString();
         const MEDIAINFO_LOCAL_WASM_URL = new URL('vendor/mediainfo/MediaInfoModule.wasm', document.baseURI).toString();
         const MEDIAINFO_CDN_ESM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/esm-bundle/index.min.js';
         const MEDIAINFO_CDN_WASM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/MediaInfoModule.wasm';
+
         let wasmModeEnabled = false;
         let mediaInfoAnalyzer = null;
+        let fallbackUi = null;
 
-        const ext = (name) => {
+        function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+        function waitFor(fn, timeout = 4000, step = 50) {
+          return new Promise((resolve) => {
+            const t0 = performance.now();
+            const tick = () => {
+              const value = fn();
+              if (value) return resolve(value);
+              if (performance.now() - t0 >= timeout) return resolve(null);
+              setTimeout(tick, step);
+            };
+            tick();
+          });
+        }
+
+        function isVisible(el) {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+        }
+
+        function findClickableByText(rx, root = document) {
+          const nodes = [...root.querySelectorAll('button,a,[role="button"]')];
+          return nodes.find((n) => isVisible(n) && rx.test((n.textContent || '').trim()));
+        }
+
+        function setNativeValue(el, value) {
+          if ('value' in el) {
+            const proto = Object.getPrototypeOf(el);
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && typeof desc.set === 'function') {
+              desc.set.call(el, value);
+            } else {
+              el.value = value;
+            }
+          } else {
+            el.textContent = value;
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+
+        function ext(name) {
           const i = name.lastIndexOf('.');
           return i >= 0 ? name.slice(i).toLowerCase() : '';
-        };
+        }
 
-        const setStatus = (el, msg) => {
-          if (el) el.textContent = msg;
-        };
+        function setStatus(msg) {
+          if (!fallbackUi) return;
+          fallbackUi.status.textContent = msg;
+        }
 
-        const createPanel = () => {
+        function ensureFallbackPanel() {
+          if (fallbackUi) return fallbackUi;
+          const appRoot = document.getElementById('app');
+          if (!appRoot) return null;
+
           const root = document.createElement('section');
           root.className = 'api-panel';
+          root.style.display = 'none';
           root.innerHTML = `
-            <h3 style="margin:0 0 8px 0;">Mode MediaInfo WASM (CDN)</h3>
-            <p style="margin:0 0 10px 0;color:#94a3b8;">Analyse locale navigateur via mediainfo.js.org (sans chunk Vite interne).</p>
+            <h3 style="margin:0 0 8px 0;">Fallback MediaInfo WASM</h3>
+            <p style="margin:0 0 10px 0;color:#94a3b8;">Affiché uniquement si l'injection “Coller un NFO” échoue.</p>
             <div class="api-row">
-              <input id="api-file-input" type="file" accept=".mkv,.mp4,.avi,video/*" />
-              <button id="api-analyze-btn" class="api-btn" type="button">Analyser (WASM)</button>
               <button id="api-copy-nfo" class="api-btn" type="button">Copier NFO</button>
             </div>
-            <div id="api-drop-zone" class="api-drop">Glissez-déposez un fichier vidéo ici</div>
             <div id="api-status" class="api-status"></div>
             <details style="margin-top:10px;">
               <summary>MediaInfo JSON</summary>
@@ -106,41 +154,98 @@
               <pre id="api-nfo" class="api-result"></pre>
             </details>
           `;
-          return root;
-        };
+          appRoot.insertAdjacentElement('afterend', root);
 
-        const findNfoTextarea = () => {
-          const textareas = [...document.querySelectorAll('textarea')];
-          return textareas.find((ta) => {
-            const ctx = `${ta.placeholder || ''} ${ta.id || ''} ${ta.name || ''}`.toLowerCase();
-            return ctx.includes('nfo') || ctx.includes('coller');
-          }) || null;
-        };
+          const ui = {
+            root,
+            status: root.querySelector('#api-status'),
+            json: root.querySelector('#api-json'),
+            nfo: root.querySelector('#api-nfo'),
+            copyBtn: root.querySelector('#api-copy-nfo'),
+          };
+          ui.copyBtn.addEventListener('click', async () => {
+            if (!ui.nfo.textContent) return;
+            try {
+              await navigator.clipboard.writeText(ui.nfo.textContent);
+              setStatus('NFO copié dans le presse-papiers.');
+            } catch {
+              setStatus('Impossible de copier automatiquement.');
+            }
+          });
 
-        const injectNfoToApp = (nfoText) => {
-          const target = findNfoTextarea();
-          if (!target) return false;
-          target.value = nfoText;
-          target.dispatchEvent(new Event('input', { bubbles: true }));
-          target.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        };
+          fallbackUi = ui;
+          return ui;
+        }
 
-        const hideMediaInfoWarnings = () => {
+        function showFallbackPanel(mediaInfoObject, nfoText, reason) {
+          const ui = ensureFallbackPanel();
+          if (!ui) return;
+          ui.root.style.display = 'block';
+          ui.json.textContent = JSON.stringify(mediaInfoObject || {}, null, 2);
+          ui.nfo.textContent = nfoText || '';
+          setStatus(`Fallback activé: ${reason}`);
+        }
+
+        function findNfoTargetField(root = document) {
+          const fields = [...root.querySelectorAll('textarea,[contenteditable="true"],input[type="text"]')]
+            .filter((el) => isVisible(el));
+          return fields[0] || null;
+        }
+
+        async function injectNfoAndGoTmdb(nfoText) {
+          const open = findClickableByText(/coller un nfo/i);
+          if (!open) return { ok: false, why: "bouton 'Coller un NFO' introuvable" };
+          open.click();
+
+          const modal = await waitFor(
+            () => document.querySelector('[role="dialog"],.modal,[data-modal]') || document.body,
+            3000
+          );
+          const targetField = await waitFor(() => findNfoTargetField(modal), 3000);
+          if (!targetField) return { ok: false, why: 'textarea NFO introuvable' };
+
+          setNativeValue(targetField, nfoText);
+
+          const validate =
+            findClickableByText(/valider/i, modal) ||
+            findClickableByText(/importer/i, modal) ||
+            findClickableByText(/analyser/i, modal) ||
+            findClickableByText(/continuer/i, modal) ||
+            findClickableByText(/g[ée]n[ée]rer/i, modal);
+          if (!validate) return { ok: false, why: 'bouton de validation introuvable' };
+          validate.click();
+
+          const tmdbNode = await waitFor(() => {
+            const nodes = [...document.querySelectorAll('h1,h2,h3,div,span,label,p')];
+            return nodes.find((n) => {
+              const txt = (n.textContent || '').toLowerCase();
+              return txt.includes('recherche tmdb') || txt.includes('sélectionnez le film') || txt.includes('selectionnez le film') || txt.includes('tmdb');
+            }) || null;
+          }, 4500);
+
+          if (tmdbNode && tmdbNode.scrollIntoView) {
+            tmdbNode.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return { ok: true };
+          }
+
+          return { ok: false, why: 'écran TMDB non détecté après validation' };
+        }
+
+        function hideMediaInfoWarnings() {
           const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-          const bad = [];
+          const badNodes = [];
           while (walker.nextNode()) {
             const value = String(walker.currentNode.nodeValue || '').toLowerCase();
             if (value.includes('module mediainfo') || value.includes('mediainfo indisponible')) {
-              bad.push(walker.currentNode.parentElement);
+              badNodes.push(walker.currentNode.parentElement);
             }
           }
-          bad.forEach((el) => {
+          badNodes.forEach((el) => {
             if (el) el.style.display = 'none';
           });
-        };
+        }
 
-        const toNfoLikeText = (parsed) => {
+        function toNfoLikeText(parsed) {
           try {
             const tracks = parsed?.media?.track || [];
             const byType = (type) => tracks.find((t) => String(t['@type'] || '').toLowerCase() === type) || {};
@@ -159,23 +264,28 @@
               `Width                                    : ${v.Width_String || v.Width || ''}`,
               `Height                                   : ${v.Height_String || v.Height || ''}`,
               `Frame rate                               : ${v.FrameRate_String || v.FrameRate || ''}`,
+              `Bit rate                                 : ${v.BitRate_String || v.BitRate || ''}`,
               '',
               'Audio',
               `Format                                   : ${a.Format || ''}`,
+              `Channels                                 : ${a.Channels || a['Channel(s)'] || ''}`,
+              `Bit rate                                 : ${a.BitRate_String || a.BitRate || ''}`,
               `Language                                 : ${a.Language_String3 || a.Language || ''}`,
-            ].join('\n').trim() + '\n';
+            ].join('
+').trim() + '
+';
           } catch {
-            return "";
+            return '';
           }
-        };
+        }
 
-        const getChunk = async (file, offset, length) => {
+        async function getChunk(file, offset, length) {
           const chunk = file.slice(offset, offset + length);
           const buffer = await chunk.arrayBuffer();
           return new Uint8Array(buffer);
-        };
+        }
 
-        const createAnalyzer = async () => {
+        async function createAnalyzer() {
           if (mediaInfoAnalyzer) return mediaInfoAnalyzer;
 
           const attempts = [
@@ -197,11 +307,10 @@
               lastError = new Error(`[${attempt.label}] ${error.message || error}`);
             }
           }
-
           throw lastError || new Error('Impossible de charger mediainfo.js');
-        };
+        }
 
-        const analyzeWithWasm = async (file) => {
+        async function analyzeWithWasm(file) {
           const analyzer = await createAnalyzer();
           try {
             return await analyzer.analyzeData(
@@ -214,40 +323,34 @@
               mediaInfoAnalyzer = null;
             }
           }
-        };
+        }
 
-        const handleVideoFile = async (file, ui, origin = 'manual') => {
-          if (!file) {
-            setStatus(ui.status, 'Aucun fichier sélectionné.');
-            return;
-          }
-          const extension = ext(file.name);
-          if (!ALLOWED.includes(extension)) {
-            setStatus(ui.status, `Extension non autorisée: ${extension || '(none)'}`);
-            return;
-          }
+        async function handleVideoFile(file, origin = 'manual') {
+          if (!file) return;
+          const extension = ext(file.name || '');
+          if (!ALLOWED.includes(extension)) return;
 
-          setStatus(ui.status, `WASM mode: analyse en cours (${origin}) – ${file.name}`);
-          ui.json.textContent = '';
-          ui.nfo.textContent = '';
+          setStatus(`${__LC_WASM_MODE_SIGNATURE}: analyse en cours (${origin})…`);
+          hideMediaInfoWarnings();
 
           try {
             const mediaInfoObject = await analyzeWithWasm(file);
-            ui.json.textContent = JSON.stringify(mediaInfoObject, null, 2);
             const nfoText = toNfoLikeText(mediaInfoObject);
-            ui.nfo.textContent = nfoText;
-            const injected = injectNfoToApp(nfoText);
-            hideMediaInfoWarnings();
-            setStatus(
-              ui.status,
-              `${__LC_WASM_MODE_SIGNATURE}: analyse OK (${Math.round(file.size / (1024 * 1024))} MB). ${injected ? 'NFO injecté dans l\'app.' : 'Injection NFO impossible, utilisez le panneau.'}`
-            );
-          } catch (err) {
-            setStatus(ui.status, `Erreur WASM: ${err.message || err}`);
-          }
-        };
+            const injected = await injectNfoAndGoTmdb(nfoText);
 
-        const setupCaptureInterceptors = (ui) => {
+            if (injected.ok) {
+              hideMediaInfoWarnings();
+              setStatus(`${__LC_WASM_MODE_SIGNATURE}: analyse OK, TMDB ouvert.`);
+              return;
+            }
+
+            showFallbackPanel(mediaInfoObject, nfoText, injected.why);
+          } catch (err) {
+            showFallbackPanel({}, '', `erreur WASM: ${err.message || err}`);
+          }
+        }
+
+        function setupCaptureInterceptors() {
           const looksLikeVideoFile = (file) => !!file && ALLOWED.includes(ext(file.name || ''));
 
           document.addEventListener('change', (event) => {
@@ -256,24 +359,24 @@
             if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
             const file = input.files && input.files[0];
             if (!looksLikeVideoFile(file)) return;
-            event.stopImmediatePropagation();
             event.preventDefault();
-            handleVideoFile(file, ui, 'input-capture');
+            event.stopImmediatePropagation();
+            handleVideoFile(file, 'input-capture');
           }, true);
 
           ['drop', 'dragover', 'dragenter'].forEach((type) => {
             document.addEventListener(type, (event) => {
               if (!wasmModeEnabled) return;
               const dt = event.dataTransfer;
-              if (!dt || !dt.files || !dt.files[0] || !looksLikeVideoFile(dt.files[0])) return;
+              if (!dt || !dt.files || !looksLikeVideoFile(dt.files[0])) return;
               event.preventDefault();
               if (type === 'drop') {
                 event.stopImmediatePropagation();
-                handleVideoFile(dt.files[0], ui, 'drop-capture');
+                handleVideoFile(dt.files[0], 'drop-capture');
               }
             }, true);
           });
-        };
+        }
 
         window.addEventListener('unhandledrejection', (event) => {
           if (!wasmModeEnabled) return;
@@ -285,64 +388,17 @@
         });
 
         document.addEventListener('DOMContentLoaded', async () => {
-          const appRoot = document.getElementById('app');
-          if (!appRoot || document.getElementById('api-file-input')) return;
-
-          const panel = createPanel();
-          appRoot.insertAdjacentElement('afterend', panel);
-
-          const input = document.getElementById('api-file-input');
-          const button = document.getElementById('api-analyze-btn');
-          const copyNfo = document.getElementById('api-copy-nfo');
-          const dropZone = document.getElementById('api-drop-zone');
-          const json = document.getElementById('api-json');
-          const nfo = document.getElementById('api-nfo');
-          const status = document.getElementById('api-status');
-
-          const ui = { json, nfo, status };
-
+          ensureFallbackPanel();
           try {
             await createAnalyzer();
             wasmModeEnabled = true;
-            setStatus(status, `${__LC_WASM_MODE_SIGNATURE}: actif (vendor local si dispo, sinon CDN).`);
-          } catch (err) {
+            setStatus(`${__LC_WASM_MODE_SIGNATURE}: actif.`);
+          } catch (error) {
             wasmModeEnabled = false;
-            setStatus(status, `WASM indisponible (${err.message || err}). Fallback: panneau manuel NFO only.`);
+            showFallbackPanel({}, '', `chargement MediaInfo impossible: ${error.message || error}`);
           }
 
-          button.addEventListener('click', () => handleVideoFile(input.files[0], ui, 'panel-button'));
-          input.addEventListener('change', () => {
-            if (input.files[0]) setStatus(status, `Fichier prêt: ${input.files[0].name}`);
-          });
-          copyNfo.addEventListener('click', async () => {
-            if (!nfo.textContent) return;
-            try {
-              await navigator.clipboard.writeText(nfo.textContent);
-              setStatus(status, 'NFO copié dans le presse-papiers.');
-            } catch {
-              setStatus(status, 'Impossible de copier automatiquement.');
-            }
-          });
-
-          ['dragenter', 'dragover'].forEach((evt) => {
-            dropZone.addEventListener(evt, (e) => {
-              e.preventDefault();
-              dropZone.style.borderColor = '#22c55e';
-            });
-          });
-          ['dragleave', 'drop'].forEach((evt) => {
-            dropZone.addEventListener(evt, (e) => {
-              e.preventDefault();
-              dropZone.style.borderColor = '#475569';
-            });
-          });
-          dropZone.addEventListener('drop', (e) => {
-            const file = e.dataTransfer?.files?.[0];
-            if (!file) return;
-            handleVideoFile(file, ui, 'panel-drop');
-          });
-
-          setupCaptureInterceptors(ui);
+          setupCaptureInterceptors();
 
           const observer = new MutationObserver(() => {
             if (wasmModeEnabled) hideMediaInfoWarnings();

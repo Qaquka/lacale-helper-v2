@@ -76,10 +76,9 @@ curl -s -F "file=@/chemin/video.mkv" http://localhost:${WEB_PORT:-8088}/api/anal
 curl -I http://localhost:${WEB_PORT:-8088}/lacale-helper-v2/assets/index-Ddv4Ao2m.js
 ```
 
-Vous avez un panneau **“Mode API MediaInfo (Docker/NAS)”** sous l’app:
-- upload / drag&drop vidéo,
-- résultat `MediaInfo JSON`,
-- NFO généré (copiable).
+Le mode MediaInfo WASM intercepte désormais le flux natif (upload/drop) et tente automatiquement le parcours **Coller un NFO -> Valider -> écran TMDB**.
+
+Un panneau fallback JSON/NFO est présent mais **caché par défaut** et ne s'affiche qu'en cas d'échec d'injection native.
 
 ---
 
@@ -98,6 +97,13 @@ node tests/mediainfo-wasm-mode.test.js
 python -m pip install -r api/requirements-dev.txt
 PYTHONPATH=api pytest -q api/tests
 ```
+
+### Test manuel (flux natif attendu)
+1. Ouvrir `http://localhost:${WEB_PORT:-8088}/lacale-helper-v2/`.
+2. Déposer une vidéo (`.mkv/.mp4/.avi`) dans l'UI principale (pas dans un panneau custom).
+3. Vérifier le statut `analyse en cours` puis la bascule vers l'écran TMDB (`Recherche TMDB` / `Sélectionnez le film ou la série`).
+4. Sélectionner un résultat TMDB et vérifier que les champs se remplissent comme le flux d'origine.
+5. Vérifier que le panneau fallback JSON/NFO **n'est pas visible** en cas de succès d'injection.
 
 ---
 
