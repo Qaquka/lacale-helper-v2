@@ -14,6 +14,18 @@ assert.ok(indexHtml.includes('analyzer.close()'), 'MediaInfo analyzer close() ca
 assert.ok(indexHtml.includes("console.log(__LC_WASM_MODE_SIGNATURE, 'commit', __LC_WASM_MODE_COMMIT);"), 'WASM version stamp console log missing');
 assert.ok(indexHtml.includes("data-lc-wasm-badge"), 'WASM badge marker missing in index.html');
 
+
+// MediaInfo text rendering format guards
+assert.ok(indexHtml.includes('function renderMediaInfoText(tracks)'), 'renderMediaInfoText(tracks) missing');
+assert.ok(indexHtml.includes('function pick(track, candidates)'), 'pick(track, candidates) helper missing');
+assert.ok(indexHtml.includes("padEnd(PADDING, ' ')"), 'MediaInfo text keys should use fixed-width padding');
+assert.ok(indexHtml.includes("const sectionDefs = ["), 'Section definition table missing');
+assert.ok(indexHtml.includes("header: (_, i) => `Audio #${i + 1}`"), 'Audio #i section numbering missing');
+assert.ok(indexHtml.includes("header: (_, i) => `Text #${i + 1}`"), 'Text #i section numbering missing');
+assert.ok(indexHtml.includes("const menuTrack = list.find"), 'Menu section should be conditional');
+assert.ok(!indexHtml.includes('N/A'), 'Renderer must not inject N/A placeholders');
+assert.ok(indexHtml.includes('renderMediaInfoText(mediaInfoObject?.media?.track || [])'), 'Analysis flow must inject exact MediaInfo text output');
+
 // Exclusive capture flow checks
 assert.ok(indexHtml.includes('async function handleFileExclusive(file, event, origin = \'exclusive\')'), 'Exclusive file handler missing');
 assert.ok(indexHtml.includes('stopEventCompletely(event);'), 'Exclusive handler must stop event propagation completely');

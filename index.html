@@ -225,36 +225,173 @@
           badNodes.forEach((el) => { if (el) el.style.display = 'none'; });
         }
 
-        function toNfoLikeText(parsed) {
-          try {
-            const tracks = parsed?.media?.track || [];
-            const byType = (type) => tracks.find((t) => String(t['@type'] || '').toLowerCase() === type) || {};
-            const g = byType('general');
-            const v = byType('video');
-            const a = byType('audio');
-            return [
-              'General',
-              `Complete name                            : ${g.CompleteName || ''}`,
-              `Format                                   : ${g.Format || ''}`,
-              `File size                                : ${g.FileSize_String || g.FileSize || ''}`,
-              `Duration                                 : ${g.Duration_String3 || g.Duration_String || g.Duration || ''}`,
-              '',
-              'Video',
-              `Format                                   : ${v.Format || ''}`,
-              `Width                                    : ${v.Width_String || v.Width || ''}`,
-              `Height                                   : ${v.Height_String || v.Height || ''}`,
-              `Frame rate                               : ${v.FrameRate_String || v.FrameRate || ''}`,
-              `Bit rate                                 : ${v.BitRate_String || v.BitRate || ''}`,
-              '',
-              'Audio',
-              `Format                                   : ${a.Format || ''}`,
-              `Channels                                 : ${a.Channels || a['Channel(s)'] || ''}`,
-              `Bit rate                                 : ${a.BitRate_String || a.BitRate || ''}`,
-              `Language                                 : ${a.Language_String3 || a.Language || ''}`,
-            ].join('\n').trim() + '\n';
-          } catch {
-            return '';
+        function normalizeValue(value) {
+          if (value === null || value === undefined) return '';
+          if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+          if (Array.isArray(value)) return value.map((v) => normalizeValue(v)).filter(Boolean).join(' / ');
+          const str = String(value).trim();
+          if (!str) return '';
+          if (/^(true|yes)$/i.test(str)) return 'Yes';
+          if (/^(false|no)$/i.test(str)) return 'No';
+          return str;
+        }
+
+        function pick(track, candidates) {
+          if (!track) return { key: null, value: '' };
+          for (const key of candidates) {
+            if (!(key in track)) continue;
+            const value = normalizeValue(track[key]);
+            if (value) return { key, value };
           }
+          return { key: null, value: '' };
+        }
+
+        function renderMediaInfoText(tracks) {
+          const PADDING = 41;
+          const formatLine = (key, value) => `${key.padEnd(PADDING, ' ')} : ${value}`;
+          const isInternalKey = (key) => key.startsWith('@') || key === 'extra';
+
+          const sectionDefs = [
+            {
+              type: 'General',
+              header: () => 'General',
+              fields: [
+                ['Unique ID', ['UniqueID', 'Unique_ID']],
+                ['Format', ['Format']],
+                ['Format version', ['Format_Version', 'FormatVersion']],
+                ['File size', ['FileSize_String4', 'FileSize_String3', 'FileSize_String2', 'FileSize_String', 'FileSize']],
+                ['Duration', ['Duration_String4', 'Duration_String3', 'Duration_String', 'Duration']],
+                ['Overall bit rate', ['OverallBitRate_String', 'OverallBitRate']],
+                ['Frame rate', ['FrameRate_String', 'FrameRate']],
+                ['Title', ['Title']],
+                ['Encoded date', ['Encoded_Date', 'EncodedDate']],
+                ['Writing application', ['Encoded_Application', 'Writing_Application']],
+                ['Writing library', ['Encoded_Library', 'Writing_Library']],
+              ],
+            },
+            {
+              type: 'Video',
+              header: () => 'Video',
+              fields: [
+                ['ID', ['ID']],
+                ['Format', ['Format']],
+                ['Format/Info', ['Format_Info']],
+                ['Format profile', ['Format_Profile']],
+                ['HDR format', ['HDR_Format']],
+                ['Codec ID', ['CodecID', 'Codec_ID']],
+                ['Codec ID/Info', ['CodecID_Info', 'Codec_ID_Info']],
+                ['Duration', ['Duration_String4', 'Duration_String3', 'Duration_String', 'Duration']],
+                ['Bit rate', ['BitRate_String', 'BitRate']],
+                ['Width', ['Width_String', 'Width']],
+                ['Height', ['Height_String', 'Height']],
+                ['Display aspect ratio', ['DisplayAspectRatio_String', 'DisplayAspectRatio']],
+                ['Frame rate mode', ['FrameRate_Mode', 'FrameRateMode']],
+                ['Frame rate', ['FrameRate_String', 'FrameRate']],
+                ['Color space', ['ColorSpace']],
+                ['Chroma subsampling', ['ChromaSubsampling_String', 'ChromaSubsampling']],
+                ['Bit depth', ['BitDepth_String', 'BitDepth']],
+                ['Bits/(Pixel*Frame)', ['Bits__Pixel_Frame_', 'Bits-(Pixel*Frame)', 'Bits_Pixel_Frame']],
+                ['Stream size', ['StreamSize_String4', 'StreamSize_String3', 'StreamSize_String', 'StreamSize']],
+                ['Default', ['Default']],
+                ['Forced', ['Forced']],
+                ['Color range', ['colour_range', 'ColorRange']],
+                ['Color primaries', ['colour_primaries', 'ColorPrimaries']],
+                ['Transfer characteristics', ['transfer_characteristics', 'TransferCharacteristics']],
+                ['Matrix coefficients', ['matrix_coefficients', 'MatrixCoefficients']],
+                ['Mastering display color primaries', ['MasteringDisplay_ColorPrimaries', 'MasteringDisplayColorPrimaries']],
+                ['Mastering display luminance', ['MasteringDisplay_Luminance', 'MasteringDisplayLuminance']],
+              ],
+            },
+            {
+              type: 'Audio',
+              header: (_, i) => `Audio #${i + 1}`,
+              fields: [
+                ['ID', ['ID']],
+                ['Format', ['Format']],
+                ['Format/Info', ['Format_Info']],
+                ['Commercial name', ['Format_Commercial_IfAny', 'Format_Commercial']],
+                ['Codec ID', ['CodecID', 'Codec_ID']],
+                ['Codec ID/Info', ['CodecID_Info', 'Codec_ID_Info']],
+                ['Duration', ['Duration_String4', 'Duration_String3', 'Duration_String', 'Duration']],
+                ['Bit rate mode', ['BitRate_Mode', 'BitRateMode']],
+                ['Bit rate', ['BitRate_String', 'BitRate']],
+                ['Channel(s)', ['Channel_s_', 'Channels']],
+                ['Channel layout', ['ChannelLayout', 'ChannelLayout_Original']],
+                ['Sampling rate', ['SamplingRate_String', 'SamplingRate']],
+                ['Frame rate', ['FrameRate_String', 'FrameRate']],
+                ['Compression mode', ['Compression_Mode', 'CompressionMode']],
+                ['Stream size', ['StreamSize_String4', 'StreamSize_String3', 'StreamSize_String', 'StreamSize']],
+                ['Title', ['Title']],
+                ['Language', ['Language_String3', 'Language']],
+                ['Service kind', ['ServiceKind']],
+                ['Default', ['Default']],
+                ['Forced', ['Forced']],
+              ],
+            },
+            {
+              type: 'Text',
+              header: (_, i) => `Text #${i + 1}`,
+              fields: [
+                ['ID', ['ID']],
+                ['Format', ['Format']],
+                ['Muxing mode', ['MuxingMode']],
+                ['Codec ID', ['CodecID', 'Codec_ID']],
+                ['Codec ID/Info', ['CodecID_Info', 'Codec_ID_Info']],
+                ['Duration', ['Duration_String4', 'Duration_String3', 'Duration_String', 'Duration']],
+                ['Bit rate', ['BitRate_String', 'BitRate']],
+                ['Frame rate', ['FrameRate_String', 'FrameRate']],
+                ['Count of elements', ['CountOfElements', 'Count_of_elements']],
+                ['Stream size', ['StreamSize_String4', 'StreamSize_String3', 'StreamSize_String', 'StreamSize']],
+                ['Title', ['Title']],
+                ['Language', ['Language_String3', 'Language']],
+                ['Default', ['Default']],
+                ['Forced', ['Forced']],
+              ],
+            },
+          ];
+
+          const list = Array.isArray(tracks) ? tracks : [];
+          const sections = [];
+
+          for (const def of sectionDefs) {
+            const matchingTracks = list.filter((track) => String(track?.['@type'] || '').toLowerCase() === def.type.toLowerCase());
+            matchingTracks.forEach((track, index) => {
+              const lines = [def.header(track, index)];
+              const used = new Set();
+
+              def.fields.forEach(([label, candidates]) => {
+                const selected = pick(track, candidates);
+                if (!selected.key || !selected.value) return;
+                lines.push(formatLine(label, selected.value));
+                used.add(selected.key);
+              });
+
+              Object.keys(track || {}).forEach((key) => {
+                if (isInternalKey(key) || used.has(key)) return;
+                const value = normalizeValue(track[key]);
+                if (!value) return;
+                const label = key.replace(/_/g, ' ');
+                lines.push(formatLine(label, value));
+              });
+
+              if (lines.length > 1) sections.push(lines.join('\n'));
+            });
+          }
+
+          const menuTrack = list.find((track) => String(track?.['@type'] || '').toLowerCase() === 'menu');
+          if (menuTrack) {
+            const menuLines = ['Menu'];
+            Object.keys(menuTrack).forEach((key) => {
+              if (isInternalKey(key)) return;
+              if (!/^\d{2}:\d{2}:\d{2}\.?\d*$/.test(key)) return;
+              const value = normalizeValue(menuTrack[key]);
+              if (!value) return;
+              menuLines.push(formatLine(key, value));
+            });
+            if (menuLines.length > 1) sections.push(menuLines.join('\n'));
+          }
+
+          return sections.join('\n\n').trim() + '\n';
         }
 
         async function getChunk(file, offset, length) {
@@ -370,7 +507,7 @@
 
           try {
             const mediaInfoObject = await analyzeWithWasm(file);
-            const nfoText = toNfoLikeText(mediaInfoObject);
+            const nfoText = renderMediaInfoText(mediaInfoObject?.media?.track || []);
 
             // Laisser l'UI native visible avant ouverture de la modale Coller un NFO.
             setOverlayVisible(false);
