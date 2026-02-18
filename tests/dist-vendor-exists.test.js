@@ -24,4 +24,13 @@ for (const removedPath of ['api', 'docker-compose.yml', 'Dockerfile', 'nginx.con
   assert.ok(!fs.existsSync(path.join(root, removedPath)), `${removedPath} should be removed for static-only project`);
 }
 
+
+const forbiddenDistPaths = [
+  path.join(distDir, 'api'),
+  path.join(distDir, 'public', 'api'),
+];
+for (const forbiddenPath of forbiddenDistPaths) {
+  assert.ok(!fs.existsSync(forbiddenPath), `${path.relative(root, forbiddenPath)} should not exist in static dist`);
+}
+
 console.log('Dist vendor files are present:', wasmCandidates.join(', '));
