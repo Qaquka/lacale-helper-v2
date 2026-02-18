@@ -1,0 +1,10 @@
+{
+  "name": "lacale-helper-v2-static",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Static deployment helpers for lacale-helper-v2",
+  "scripts": {
+    "build": "node scripts/build-dist.mjs",
+    "test": "node tests/base-links.test.js && node tests/no-missing-chunks.test.js && node tests/source-detection.test.js && node tests/mediainfo-wasm-mode.test.js && node tests/dist-vendor-exists.test.js"
+  }
+}
