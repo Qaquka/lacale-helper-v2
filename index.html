@@ -9,6 +9,449 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>La Cale - Upload Helper</title>
+    <script>
+      (() => {
+        document.addEventListener(
+          'click',
+          (event) => {
+            const anchor = event.target.closest('a[href="/"]');
+            if (!anchor) return;
+
+            event.preventDefault();
+            const baseValue = document.querySelector('base')?.getAttribute('href') || './';
+            window.location.assign(new URL('./', baseValue).toString());
+          },
+          true
+        );
+      })();
+    </script>
+    <style>
+      .api-panel {
+        margin: 16px;
+        padding: 16px;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      .api-drop {
+        margin-top: 8px;
+        border: 1px dashed #475569;
+        border-radius: 10px;
+        padding: 14px;
+        cursor: pointer;
+      }
+      .api-result {
+        margin-top: 12px;
+        white-space: pre-wrap;
+        max-height: 280px;
+        overflow: auto;
+        background: #020617;
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 12px;
+      }
+      .api-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .api-btn {
+        padding: 6px 10px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #111827;
+        color: #e2e8f0;
+        cursor: pointer;
+      }
+      .api-status { margin-top: 8px; font-size: 13px; color: #93c5fd; }
+    </style>
+    <script src="vendor/mediainfo-fichegen/MediaInfoWasm.js"></script>
+    <script>
+      (() => {
+        const __LC_WASM_MODE_SIGNATURE = 'LC_MEDIAINFO_WASM_MODE_V5';
+        const __LC_WASM_MODE_COMMIT = 'deploy-check-v5';
+        const ALLOWED = ['.mkv', '.mp4', '.avi'];
+        const MEDIAINFO_CDN_ESM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/esm-bundle/index.min.js';
+        const MEDIAINFO_CDN_WASM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/MediaInfoModule.wasm';
+
+        let wasmModeEnabled = false;
+        let mediaInfoAnalyzer = null;
+        let fallbackUi = null;
+        let analyzingOverlay = null;
+
+        function sleep(ms){ return new Promise((r) => setTimeout(r, ms)); }
+
+        async function waitFor(fn, timeout = 4000, step = 50) {
+          const t0 = performance.now();
+          while (performance.now() - t0 < timeout) {
+            const value = fn();
+            if (value) return value;
+            await sleep(step);
+          }
+          return null;
+        }
+
+        function stopEventCompletely(e) {
+          if (!e) return;
+          if (typeof e.preventDefault === 'function') e.preventDefault();
+          if (typeof e.stopPropagation === 'function') e.stopPropagation();
+          if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        }
+
+        function isVisible(el) {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+        }
+
+        function findClickableByText(rx, root = document) {
+          const nodes = [...root.querySelectorAll('button,a,[role="button"]')];
+          return nodes.find((n) => isVisible(n) && rx.test((n.textContent || '').trim()));
+        }
+
+        function setNativeValue(el, value) {
+          if ('value' in el) {
+            const proto = Object.getPrototypeOf(el);
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && typeof desc.set === 'function') desc.set.call(el, value);
+            else el.value = value;
+          } else {
+            el.textContent = value;
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+
+        function ext(name) {
+          const i = name.lastIndexOf('.');
+          return i >= 0 ? name.slice(i).toLowerCase() : '';
+        }
+
+        function ensureOverlay() {
+          if (analyzingOverlay) return analyzingOverlay;
+          const el = document.createElement('div');
+          el.setAttribute('data-lc-wasm-overlay', 'true');
+          el.style.cssText = 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(2,6,23,.65);z-index:9999;color:#e2e8f0;font:600 16px Inter,system-ui,sans-serif;padding:24px;text-align:center;';
+          el.textContent = 'Analyse en cours…';
+          document.body.appendChild(el);
+          analyzingOverlay = el;
+          return el;
+        }
+
+        function setOverlayVisible(visible, text = 'Analyse en cours…') {
+          const overlay = ensureOverlay();
+          overlay.textContent = text;
+          overlay.style.display = visible ? 'flex' : 'none';
+        }
+
+        function setStatus(msg) {
+          if (fallbackUi) fallbackUi.status.textContent = msg;
+        }
+
+        function ensureFallbackPanel() {
+          if (fallbackUi) return fallbackUi;
+          const appRoot = document.getElementById('app');
+          if (!appRoot) return null;
+
+          const root = document.createElement('section');
+          root.className = 'api-panel';
+          root.style.display = 'none';
+          root.innerHTML = `
+            <h3 style="margin:0 0 8px 0;">Fallback MediaInfo WASM</h3>
+            <p style="margin:0 0 10px 0;color:#94a3b8;">Affiché uniquement si l'injection native “Coller un NFO” échoue.</p>
+            <div class="api-row"><button id="api-copy-nfo" class="api-btn" type="button">Copier NFO</button></div>
+            <div id="api-status" class="api-status"></div>
+            <details style="margin-top:10px;"><summary>MediaInfo JSON</summary><pre id="api-json" class="api-result"></pre></details>
+            <details style="margin-top:10px;" open><summary>NFO généré</summary><pre id="api-nfo" class="api-result"></pre></details>
+          `;
+          appRoot.insertAdjacentElement('afterend', root);
+
+          fallbackUi = {
+            root,
+            status: root.querySelector('#api-status'),
+            json: root.querySelector('#api-json'),
+            nfo: root.querySelector('#api-nfo'),
+            copyBtn: root.querySelector('#api-copy-nfo'),
+          };
+          fallbackUi.copyBtn.addEventListener('click', async () => {
+            if (!fallbackUi.nfo.textContent) return;
+            try {
+              await navigator.clipboard.writeText(fallbackUi.nfo.textContent);
+              setStatus('NFO copié dans le presse-papiers.');
+            } catch {
+              setStatus('Impossible de copier automatiquement.');
+            }
+          });
+          return fallbackUi;
+        }
+
+        function showFallbackPanel(mediaInfoObject, nfoText, reason) {
+          const ui = ensureFallbackPanel();
+          if (!ui) return;
+          ui.root.style.display = 'block';
+          ui.json.textContent = JSON.stringify(mediaInfoObject || {}, null, 2);
+          ui.nfo.textContent = nfoText || '';
+          setStatus(`Fallback activé: ${reason}`);
+        }
+
+        function hideFallbackPanel() {
+          const ui = ensureFallbackPanel();
+          if (!ui) return;
+          ui.root.style.display = 'none';
+        }
+
+
+        function ensureVersionBadge() {
+          const existing = document.querySelector('[data-lc-wasm-badge="true"]');
+          if (existing) return existing;
+          const badge = document.createElement('div');
+          badge.setAttribute('data-lc-wasm-badge', 'true');
+          badge.textContent = 'WASM V5';
+          badge.title = `${__LC_WASM_MODE_SIGNATURE} @ ${__LC_WASM_MODE_COMMIT}`;
+          badge.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:10000;padding:4px 8px;border-radius:999px;background:rgba(15,23,42,.78);color:#cbd5e1;border:1px solid #334155;font:600 11px Inter,system-ui,sans-serif;pointer-events:none;';
+          document.body.appendChild(badge);
+          return badge;
+        }
+
+        function hideMediaInfoWarnings() {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          const badNodes = [];
+          while (walker.nextNode()) {
+            const value = String(walker.currentNode.nodeValue || '').toLowerCase();
+            if (value.includes('module mediainfo') || value.includes('mediainfo indisponible')) {
+              badNodes.push(walker.currentNode.parentElement);
+            }
+          }
+          badNodes.forEach((el) => { if (el) el.style.display = 'none'; });
+        }
+
+        function toNfoLikeText(parsed) {
+          try {
+            const tracks = parsed?.media?.track || [];
+            const byType = (type) => tracks.find((t) => String(t['@type'] || '').toLowerCase() === type) || {};
+            const g = byType('general');
+            const v = byType('video');
+            const a = byType('audio');
+            return [
+              'General',
+              `Complete name                            : ${g.CompleteName || ''}`,
+              `Format                                   : ${g.Format || ''}`,
+              `File size                                : ${g.FileSize_String || g.FileSize || ''}`,
+              `Duration                                 : ${g.Duration_String3 || g.Duration_String || g.Duration || ''}`,
+              '',
+              'Video',
+              `Format                                   : ${v.Format || ''}`,
+              `Width                                    : ${v.Width_String || v.Width || ''}`,
+              `Height                                   : ${v.Height_String || v.Height || ''}`,
+              `Frame rate                               : ${v.FrameRate_String || v.FrameRate || ''}`,
+              `Bit rate                                 : ${v.BitRate_String || v.BitRate || ''}`,
+              '',
+              'Audio',
+              `Format                                   : ${a.Format || ''}`,
+              `Channels                                 : ${a.Channels || a['Channel(s)'] || ''}`,
+              `Bit rate                                 : ${a.BitRate_String || a.BitRate || ''}`,
+              `Language                                 : ${a.Language_String3 || a.Language || ''}`,
+            ].join('\n').trim() + '\n';
+          } catch {
+            return '';
+          }
+        }
+
+        async function getChunk(file, offset, length) {
+          const chunk = file.slice(offset, offset + length);
+          const buffer = await chunk.arrayBuffer();
+          return new Uint8Array(buffer);
+        }
+
+        async function createAnalyzer() {
+          if (mediaInfoAnalyzer) return mediaInfoAnalyzer;
+
+          let lastError = null;
+
+          // Priority: fichegen-style self-contained loader script + relative WASM.
+          if (window.LCFichegenMediaInfo && typeof window.LCFichegenMediaInfo.create === 'function') {
+            try {
+              mediaInfoAnalyzer = await window.LCFichegenMediaInfo.create();
+              return mediaInfoAnalyzer;
+            } catch (error) {
+              lastError = new Error(`[fichegen-loader] ${error.message || error}`);
+            }
+          }
+
+          // Secondary fallback: direct ESM + CDN WASM.
+          try {
+            const module = await import(MEDIAINFO_CDN_ESM_URL);
+            const MediaInfoFactory = module.default || module;
+            mediaInfoAnalyzer = await MediaInfoFactory({
+              format: 'object',
+              locateFile: () => MEDIAINFO_CDN_WASM_URL,
+            });
+            return mediaInfoAnalyzer;
+          } catch (error) {
+            lastError = new Error(`[cdn-fallback] ${error.message || error}`);
+          }
+
+          throw lastError || new Error('Impossible de charger mediainfo.js');
+        }
+
+        async function analyzeWithWasm(file) {
+          const analyzer = await createAnalyzer();
+          try {
+            return await analyzer.analyzeData(
+              () => file.size,
+              (size, offset) => getChunk(file, offset, size)
+            );
+          } finally {
+            if (analyzer && typeof analyzer.close === 'function') {
+              analyzer.close();
+              mediaInfoAnalyzer = null;
+            }
+          }
+        }
+
+        async function injectNfoNative(nfoText) {
+          const open = findClickableByText(/coller un nfo/i);
+          if (!open) return { ok: false, why: "bouton 'Coller un NFO' introuvable" };
+          open.click();
+
+          const modal = await waitFor(
+            () => document.querySelector('[role="dialog"],.modal,[data-modal]') || document.body,
+            3000
+          );
+          if (!modal) return { ok: false, why: 'dialog Coller un NFO introuvable' };
+
+          const targetField = await waitFor(() => {
+            const fields = [...modal.querySelectorAll('textarea,[contenteditable="true"],input[type="text"]')]
+              .filter((el) => isVisible(el) && !el.disabled);
+            return fields[0] || null;
+          }, 3000);
+          if (!targetField) return { ok: false, why: 'textarea NFO introuvable' };
+
+          setNativeValue(targetField, nfoText);
+
+          const validate =
+            findClickableByText(/valider/i, modal) ||
+            findClickableByText(/importer/i, modal) ||
+            findClickableByText(/analyser/i, modal) ||
+            findClickableByText(/continuer/i, modal) ||
+            findClickableByText(/g[ée]n[ée]rer/i, modal);
+          if (!validate) return { ok: false, why: 'bouton de validation introuvable' };
+          validate.click();
+
+          return { ok: true };
+        }
+
+        async function detectAndScrollTmdb() {
+          const tmdbNode = await waitFor(() => {
+            const nodes = [...document.querySelectorAll('h1,h2,h3,div,span,label,p,input,button')];
+            return nodes.find((n) => {
+              const txt = (n.textContent || n.getAttribute?.('placeholder') || '').toLowerCase();
+              return txt.includes('recherche tmdb') || txt.includes('sélectionnez le film') || txt.includes('selectionnez le film') || txt.includes('tmdb');
+            }) || null;
+          }, 4500);
+
+          if (tmdbNode && tmdbNode.scrollIntoView) {
+            tmdbNode.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (typeof tmdbNode.focus === 'function') tmdbNode.focus({ preventScroll: true });
+          }
+
+          return !!tmdbNode;
+        }
+
+        async function handleFileExclusive(file, event, origin = 'exclusive') {
+          if (!wasmModeEnabled) return;
+          stopEventCompletely(event);
+          if (!file) return;
+          const extension = ext(file.name || '');
+          if (!ALLOWED.includes(extension)) return;
+
+          setOverlayVisible(true, 'Analyse en cours…');
+          hideMediaInfoWarnings();
+
+          try {
+            const mediaInfoObject = await analyzeWithWasm(file);
+            const nfoText = toNfoLikeText(mediaInfoObject);
+
+            // Laisser l'UI native visible avant ouverture de la modale Coller un NFO.
+            setOverlayVisible(false);
+
+            const injected = await injectNfoNative(nfoText);
+            if (!injected.ok) {
+              showFallbackPanel(mediaInfoObject, nfoText, injected.why);
+              return;
+            }
+
+            hideFallbackPanel();
+            setStatus(`${__LC_WASM_MODE_SIGNATURE}: analyse OK (${origin}), injection native validée.`);
+            await detectAndScrollTmdb(); // best effort, non bloquant
+            hideMediaInfoWarnings();
+          } catch (err) {
+            showFallbackPanel({}, '', `erreur WASM: ${err.message || err}`);
+          } finally {
+            setOverlayVisible(false);
+          }
+        }
+
+        function setupCaptureInterceptors() {
+          const looksLikeVideoFile = (file) => !!file && ALLOWED.includes(ext(file.name || ''));
+
+          document.addEventListener('change', (event) => {
+            if (!wasmModeEnabled) return;
+            const input = event.target;
+            if (!(input instanceof HTMLInputElement) || input.type !== 'file') return;
+            const file = input.files && input.files[0];
+            if (!looksLikeVideoFile(file)) return;
+            handleFileExclusive(file, event, 'input-capture');
+          }, true);
+
+          document.addEventListener('drop', (event) => {
+            if (!wasmModeEnabled) return;
+            const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+            if (!looksLikeVideoFile(file)) return;
+            handleFileExclusive(file, event, 'drop-capture');
+          }, true);
+
+          document.addEventListener('dragover', (event) => {
+            if (!wasmModeEnabled) return;
+            const dt = event.dataTransfer;
+            if (!dt || !dt.files || !dt.files[0] || !looksLikeVideoFile(dt.files[0])) return;
+            stopEventCompletely(event);
+          }, true);
+        }
+
+        window.addEventListener('unhandledrejection', (event) => {
+          if (!wasmModeEnabled) return;
+          const reasonText = String(event.reason && (event.reason.message || event.reason) || '').toLowerCase();
+          if (reasonText.includes('mediainfo')) {
+            event.preventDefault();
+            hideMediaInfoWarnings();
+          }
+        });
+
+        document.addEventListener('DOMContentLoaded', async () => {
+          console.log(__LC_WASM_MODE_SIGNATURE, 'commit', __LC_WASM_MODE_COMMIT);
+          ensureVersionBadge();
+          ensureFallbackPanel();
+          ensureOverlay();
+
+          try {
+            await createAnalyzer();
+            wasmModeEnabled = true;
+            setStatus(`${__LC_WASM_MODE_SIGNATURE}: actif.`);
+          } catch (error) {
+            wasmModeEnabled = false;
+            showFallbackPanel({}, '', `chargement MediaInfo impossible: ${error.message || error}`);
+          }
+
+          setupCaptureInterceptors();
+
+          const observer = new MutationObserver(() => {
+            if (wasmModeEnabled) hideMediaInfoWarnings();
+          });
+          observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+        });
+      })();
+    </script>
     <script type="module" crossorigin src="assets/index-Ddv4Ao2m.js"></script>
     <link rel="stylesheet" crossorigin href="assets/index-BXI7GdG3.css">
   </head>
