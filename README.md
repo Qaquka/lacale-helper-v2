@@ -37,6 +37,7 @@ L’app tente un import dynamique d’un chunk MediaInfo/WASM (`mediainfo-*.js`)
 - `web` (Nginx): sert le front statique sur `http://<NAS>:${WEB_PORT}/lacale-helper-v2/` (défaut 8088).
 - `api` (FastAPI): endpoint `POST /api/analyze` (multipart).
 - Reverse proxy Nginx: `/api/* -> api:8000/api/*` (pas de CORS côté navigateur LAN).
+- Front MediaInfo WASM: priorité aux fichiers vendorisés (`/vendor/mediainfo/index.min.js` + `/vendor/mediainfo/MediaInfoModule.wasm`) avec fallback CDN si ces fichiers ne sont pas présents.
 
 ### Sécurité et limites API
 - Extensions acceptées: `.mkv`, `.mp4`, `.avi`.

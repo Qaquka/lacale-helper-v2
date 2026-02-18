@@ -68,8 +68,10 @@
       (() => {
         const __LC_WASM_MODE_SIGNATURE = 'LC_MEDIAINFO_WASM_MODE_V1';
         const ALLOWED = ['.mkv', '.mp4', '.avi'];
-        const MEDIAINFO_CDN_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/mediainfo.min.js';
-        const MEDIAINFO_WASM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/MediaInfoModule.wasm';
+        const MEDIAINFO_LOCAL_ESM_URL = new URL('vendor/mediainfo/index.min.js', document.baseURI).toString();
+        const MEDIAINFO_LOCAL_WASM_URL = new URL('vendor/mediainfo/MediaInfoModule.wasm', document.baseURI).toString();
+        const MEDIAINFO_CDN_ESM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/esm-bundle/index.min.js';
+        const MEDIAINFO_CDN_WASM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/MediaInfoModule.wasm';
         let wasmModeEnabled = false;
         let mediaInfoAnalyzer = null;
 
@@ -138,9 +140,8 @@
           });
         };
 
-        const toNfoLikeText = (rawJsonText) => {
+        const toNfoLikeText = (parsed) => {
           try {
-            const parsed = JSON.parse(rawJsonText);
             const tracks = parsed?.media?.track || [];
             const byType = (type) => tracks.find((t) => String(t['@type'] || '').toLowerCase() === type) || {};
             const g = byType('general');
@@ -164,7 +165,7 @@
               `Language                                 : ${a.Language_String3 || a.Language || ''}`,
             ].join('\n').trim() + '\n';
           } catch {
-            return rawJsonText;
+            return "";
           }
         };
 
@@ -176,21 +177,43 @@
 
         const createAnalyzer = async () => {
           if (mediaInfoAnalyzer) return mediaInfoAnalyzer;
-          const module = await import(MEDIAINFO_CDN_URL);
-          const MediaInfoFactory = module.default || module;
-          mediaInfoAnalyzer = await MediaInfoFactory({
-            format: 'JSON',
-            locateFile: () => MEDIAINFO_WASM_URL,
-          });
-          return mediaInfoAnalyzer;
+
+          const attempts = [
+            { esmUrl: MEDIAINFO_LOCAL_ESM_URL, wasmUrl: MEDIAINFO_LOCAL_WASM_URL, label: 'local-vendor' },
+            { esmUrl: MEDIAINFO_CDN_ESM_URL, wasmUrl: MEDIAINFO_CDN_WASM_URL, label: 'cdn-fallback' },
+          ];
+
+          let lastError = null;
+          for (const attempt of attempts) {
+            try {
+              const module = await import(attempt.esmUrl);
+              const MediaInfoFactory = module.default || module;
+              mediaInfoAnalyzer = await MediaInfoFactory({
+                format: 'object',
+                locateFile: () => attempt.wasmUrl,
+              });
+              return mediaInfoAnalyzer;
+            } catch (error) {
+              lastError = new Error(`[${attempt.label}] ${error.message || error}`);
+            }
+          }
+
+          throw lastError || new Error('Impossible de charger mediainfo.js');
         };
 
         const analyzeWithWasm = async (file) => {
           const analyzer = await createAnalyzer();
-          return analyzer.analyzeData(
-            () => file.size,
-            (size, offset) => getChunk(file, offset, size)
-          );
+          try {
+            return await analyzer.analyzeData(
+              () => file.size,
+              (size, offset) => getChunk(file, offset, size)
+            );
+          } finally {
+            if (analyzer && typeof analyzer.close === 'function') {
+              analyzer.close();
+              mediaInfoAnalyzer = null;
+            }
+          }
         };
 
         const handleVideoFile = async (file, ui, origin = 'manual') => {
@@ -209,9 +232,9 @@
           ui.nfo.textContent = '';
 
           try {
-            const jsonText = await analyzeWithWasm(file);
-            ui.json.textContent = jsonText;
-            const nfoText = toNfoLikeText(jsonText);
+            const mediaInfoObject = await analyzeWithWasm(file);
+            ui.json.textContent = JSON.stringify(mediaInfoObject, null, 2);
+            const nfoText = toNfoLikeText(mediaInfoObject);
             ui.nfo.textContent = nfoText;
             const injected = injectNfoToApp(nfoText);
             hideMediaInfoWarnings();
@@ -281,7 +304,7 @@
           try {
             await createAnalyzer();
             wasmModeEnabled = true;
-            setStatus(status, `${__LC_WASM_MODE_SIGNATURE}: actif (CDN + WASM).`);
+            setStatus(status, `${__LC_WASM_MODE_SIGNATURE}: actif (vendor local si dispo, sinon CDN).`);
           } catch (err) {
             wasmModeEnabled = false;
             setStatus(status, `WASM indisponible (${err.message || err}). Fallback: panneau manuel NFO only.`);
