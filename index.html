@@ -536,51 +536,108 @@
           return tracks.find((t) => String(t?.['@type'] || '').toLowerCase() === 'general') || {};
         }
 
-        async function injectNfoNativeV7(nfoText) {
+        function ensureStealthStyle() {
+          let style = document.getElementById('lc-stealth-style');
+          if (style) return style;
+          style = document.createElement('style');
+          style.id = 'lc-stealth-style';
+          style.textContent = `
+            [role="dialog"], .modal, .MuiDialog-root { transition:none !important; }
+            .lc-stealth-hide { opacity:0 !important; visibility:hidden !important; pointer-events:none !important; }
+          `;
+          document.head.appendChild(style);
+          return style;
+        }
+
+        function isNfoModal(el) {
+          if (!el || !(el instanceof Element)) return false;
+          const text = (el.textContent || '').toLowerCase();
+          return text.includes('coller un nfo');
+        }
+
+        function getLikelyBackdrop(modalEl) {
+          const selector = '.MuiBackdrop-root,.modal-backdrop,[class*="backdrop"],[data-backdrop]';
+          return modalEl?.parentElement?.querySelector(selector) || document.querySelector(selector);
+        }
+
+        function applyStealthToModal(modalEl, stealthNodes) {
+          if (!modalEl) return;
+          ensureStealthStyle();
+          modalEl.classList.add('lc-stealth-hide');
+          stealthNodes.add(modalEl);
+          const backdrop = getLikelyBackdrop(modalEl);
+          if (backdrop) {
+            backdrop.classList.add('lc-stealth-hide');
+            stealthNodes.add(backdrop);
+          }
+        }
+
+        function clearStealthMode(stealthNodes, observer) {
+          if (observer) observer.disconnect();
+          stealthNodes.forEach((node) => {
+            if (node && node.classList) node.classList.remove('lc-stealth-hide');
+          });
+        }
+
+        function startStealthObserver(stealthNodes) {
+          const observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+              for (const node of mutation.addedNodes) {
+                if (!(node instanceof Element)) continue;
+                if (isNfoModal(node)) applyStealthToModal(node, stealthNodes);
+                const nested = [...node.querySelectorAll('[role="dialog"],.modal,.MuiDialog-root')].find((el) => isNfoModal(el));
+                if (nested) applyStealthToModal(nested, stealthNodes);
+              }
+            }
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+          return observer;
+        }
+
+        async function injectNfoStealth(nfoText) {
           dbg('inject-start');
           const open = findClickableByText(/coller\s+un\s+nfo/i);
-          if (!open) return { ok: false, why: "bouton 'Coller un NFO' introuvable" };
-          open.click();
-          dbg('inject-open-clicked');
+          if (!open) return { ok: false, why: "bouton 'Coller un NFO' introuvable", validationTriggered: false };
 
-          const modal = await waitFor(
-            () => [...document.querySelectorAll('[role="dialog"],.modal,[data-modal],form')].find((el) => isVisible(el)) || null,
-            4000
-          );
-          if (!modal) return { ok: false, why: 'dialog Coller un NFO introuvable' };
+          const stealthNodes = new Set();
+          const observer = startStealthObserver(stealthNodes);
+          ensureStealthStyle();
 
-          const targetField = await waitFor(() => {
-            const fields = [...modal.querySelectorAll('textarea,[contenteditable="true"],input[type="text"]')]
-              .filter((el) => isVisible(el) && !el.disabled);
-            return fields[0] || null;
-          }, 4000);
-          if (!targetField) return { ok: false, why: 'textarea NFO introuvable' };
+          try {
+            open.click();
+            dbg('inject-open-clicked');
 
-          setNativeValue(targetField, nfoText);
-          dbg('inject-textarea-filled');
+            const modal = await waitFor(
+              () => [...document.querySelectorAll('[role="dialog"],.modal,.MuiDialog-root,form')].find((el) => isVisible(el) && isNfoModal(el)) || null,
+              4000
+            );
+            if (!modal) return { ok: false, why: 'dialog Coller un NFO introuvable', validationTriggered: false };
 
-          let validationTriggered = false;
-          const modalForm = targetField.closest('form') || modal.querySelector('form');
-          if (modalForm) {
-            if (typeof modalForm.requestSubmit === 'function') modalForm.requestSubmit();
-            else modalForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-            validationTriggered = true;
-            dbg('inject-form-submitted');
-          } else {
-            const submitBtn = [...modal.querySelectorAll('button,input[type="submit"]')].find((el) => isVisible(el) && !el.disabled && (el.type === 'submit' || el.getAttribute('type') === 'submit'));
-            const textBtn =
-              submitBtn ||
-              findClickableByText(/valider|importer|analyser|continuer|g[ée]n[ée]rer/i, modal);
-            if (!textBtn) return { ok: false, why: 'bouton de validation introuvable' };
-            textBtn.click();
-            validationTriggered = true;
-            dbg('inject-validate-clicked');
+            applyStealthToModal(modal, stealthNodes);
+
+            const textareas = [...modal.querySelectorAll('textarea,input[type="text"],[contenteditable="true"]')]
+              .filter((el) => !el.disabled)
+              .sort((a, b) => (b.getBoundingClientRect().width * b.getBoundingClientRect().height) - (a.getBoundingClientRect().width * a.getBoundingClientRect().height));
+            const targetField = textareas[0] || null;
+            if (!targetField) return { ok: false, why: 'textarea NFO introuvable', validationTriggered: false };
+
+            setNativeValue(targetField, nfoText);
+            const injectedLength = String(targetField.value || targetField.textContent || '').trim().length;
+            dbg('inject-textarea-filled', injectedLength);
+            if (injectedLength <= 50) return { ok: false, why: 'textarea NFO trop courte après injection', validationTriggered: false };
+
+            const exactAnalyzeBtn = [...modal.querySelectorAll('button,[role="button"],input[type="submit"]')]
+              .find((el) => /analyser\s+le\s+nfo/i.test((el.textContent || el.value || '').trim()));
+            if (!exactAnalyzeBtn) return { ok: false, why: 'bouton "Analyser le NFO" introuvable', validationTriggered: false };
+
+            exactAnalyzeBtn.click();
+            dbg('inject-analyser-nfo-clicked');
+
+            await waitFor(() => !isVisible(modal) || !!findTmdbNode(), 2500);
+            return { ok: true, why: '', validationTriggered: true };
+          } finally {
+            clearStealthMode(stealthNodes, observer);
           }
-
-          if (!validationTriggered) return { ok: false, why: 'validation non déclenchée' };
-
-          await waitFor(() => !isVisible(modal) || !!findTmdbNode(), 2500);
-          return { ok: true, validated: true };
         }
 
         function findTmdbNode() {
@@ -655,9 +712,7 @@
             fillFieldIfFound(/taille|file size|size/i, sizeHuman, 'size');
             fillFieldIfFound(/source|team|release/i, sourceDetected, 'source');
 
-            setOverlayVisible(false);
-
-            const injected = await injectNfoNativeV7(nfoText);
+            const injected = await injectNfoStealth(nfoText);
             if (!injected.ok) {
               showFallbackPanel(mediaInfoObject, nfoText, injected.why);
               return;
@@ -665,7 +720,8 @@
 
             hideFallbackPanel();
             setStatus(`${__LC_WASM_MODE_SIGNATURE}: analyse OK (${origin}), validation native déclenchée.`);
-            await detectAndScrollTmdb(titleCandidate); // best effort, non bloquant
+            const tmdbDetected = await detectAndScrollTmdb(titleCandidate); // best effort, non bloquant
+            if (!tmdbDetected) setStatus(`${__LC_WASM_MODE_SIGNATURE}: Analyse OK — cliquez sur Suivant/TMDB.`);
             hideMediaInfoWarnings();
           } catch (err) {
             showFallbackPanel({}, '', `erreur WASM: ${err.message || err}`);
