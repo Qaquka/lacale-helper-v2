@@ -25,7 +25,7 @@ assert.ok(nginxConf.includes('client_max_body_size 4096m;'), 'nginx client_max_b
 assert.ok(compose.includes('${WEB_PORT:-8088}:80'), 'docker-compose must expose configurable WEB_PORT');
 assert.ok(compose.includes('MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-4096}'), 'docker-compose should expose configurable MAX_UPLOAD_MB');
 
-assert.ok(indexHtml.includes('LC_MEDIAINFO_WASM_MODE_V2'), 'index.html must include WASM mode signature');
+assert.ok(indexHtml.includes('LC_MEDIAINFO_WASM_MODE_V3'), 'index.html must include WASM mode signature');
 assert.ok(envExample.includes('WEB_PORT=8088'), '.env.example must define WEB_PORT default');
 assert.ok(indexHtml.includes('setupCaptureInterceptors'), 'index.html must intercept existing upload flow in capture mode');
 

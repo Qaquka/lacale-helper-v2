@@ -101,9 +101,10 @@ PYTHONPATH=api pytest -q api/tests
 ### Test manuel (flux natif attendu)
 1. Ouvrir `http://localhost:${WEB_PORT:-8088}/lacale-helper-v2/`.
 2. Déposer une vidéo (`.mkv/.mp4/.avi`) dans l'UI principale (pas dans un panneau custom).
-3. Vérifier le statut `analyse en cours` puis la bascule vers l'écran TMDB (`Recherche TMDB` / `Sélectionnez le film ou la série`).
-4. Sélectionner un résultat TMDB et vérifier que les champs se remplissent comme le flux d'origine.
-5. Vérifier que le panneau fallback JSON/NFO **n'est pas visible** en cas de succès d'injection.
+3. Vérifier l'overlay `Analyse en cours` puis la bascule vers l'écran TMDB (`Recherche TMDB` / `Sélectionnez le film ou la série`).
+4. Vérifier qu'il n'y a **pas** de toast rouge `module MediaInfo ... indisponible` en mode WASM actif.
+5. Sélectionner un résultat TMDB et vérifier que les champs se remplissent comme le flux d'origine.
+6. Vérifier que le panneau fallback JSON/NFO **n'est pas visible** en cas de succès d'injection.
 
 ---
 
