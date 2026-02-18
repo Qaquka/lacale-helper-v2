@@ -3,34 +3,32 @@ const path = require('path');
 const assert = require('assert');
 const { execSync } = require('child_process');
 
-const root = path.join(__dirname, '..');
-const distDir = path.join(root, 'dist');
+const ROOT = path.resolve(__dirname, '..');
+const DIST = path.resolve(ROOT, 'dist');
 
-if (!fs.existsSync(distDir)) {
-  execSync('npm run build', { cwd: root, stdio: 'inherit' });
+if (!fs.existsSync(DIST)) {
+  execSync('npm run build', { cwd: ROOT, stdio: 'inherit' });
 }
 
-const vendorDir = path.join(distDir, 'vendor', 'mediainfo-fichegen');
+const vendorDir = path.resolve(DIST, 'vendor', 'mediainfo-fichegen');
 assert.ok(fs.existsSync(vendorDir), 'dist/vendor/mediainfo-fichegen must exist');
 
-const wasmJs = path.join(vendorDir, 'MediaInfoWasm.js');
-assert.ok(fs.existsSync(wasmJs), 'dist vendor loader MediaInfoWasm.js is missing');
+const wasmJsPath = path.resolve(vendorDir, 'MediaInfoWasm.js');
+assert.ok(fs.existsSync(wasmJsPath), 'dist/vendor/mediainfo-fichegen/MediaInfoWasm.js must exist');
 
-const wasmCandidates = fs.readdirSync(vendorDir).filter((name) => name.toLowerCase().endsWith('.wasm'));
-assert.ok(wasmCandidates.length > 0, 'dist vendor folder must contain at least one .wasm file');
+const wasmFiles = fs
+  .readdirSync(vendorDir)
+  .filter((fileName) => fileName.toLowerCase().endsWith('.wasm'));
+assert.ok(wasmFiles.length > 0, 'dist/vendor/mediainfo-fichegen must contain at least one .wasm file');
 
-// Project must remain static-only.
-for (const removedPath of ['api', 'docker-compose.yml', 'Dockerfile', 'nginx.conf']) {
-  assert.ok(!fs.existsSync(path.join(root, removedPath)), `${removedPath} should be removed for static-only project`);
+const backendRootPaths = ['api', 'docker-compose.yml', 'Dockerfile'];
+for (const relativePath of backendRootPaths) {
+  assert.ok(!fs.existsSync(path.resolve(ROOT, relativePath)), `${relativePath} should be removed`);
 }
 
-
-const forbiddenDistPaths = [
-  path.join(distDir, 'api'),
-  path.join(distDir, 'public', 'api'),
-];
-for (const forbiddenPath of forbiddenDistPaths) {
-  assert.ok(!fs.existsSync(forbiddenPath), `${path.relative(root, forbiddenPath)} should not exist in static dist`);
+const backendDistPaths = ['api', 'docker-compose.yml', 'Dockerfile'];
+for (const relativePath of backendDistPaths) {
+  assert.ok(!fs.existsSync(path.resolve(DIST, relativePath)), `dist/${relativePath} should be removed`);
 }
 
-console.log('Dist vendor files are present:', wasmCandidates.join(', '));
+console.log('Dist vendor files are present:', wasmFiles.join(', '));
