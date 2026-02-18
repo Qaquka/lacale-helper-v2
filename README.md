@@ -82,6 +82,18 @@ Un panneau fallback JSON/NFO est présent mais **caché par défaut** et ne s'af
 
 ---
 
+
+## Vendor fichegen mediainfo
+
+Le mode WASM charge en priorité `vendor/mediainfo-fichegen/MediaInfoWasm.js` (pattern inspiré de fichegen: résolution WASM relative au script).
+
+Fichiers attendus:
+- `vendor/mediainfo-fichegen/MediaInfoWasm.js`
+- `vendor/mediainfo-fichegen/MediaInfoWasm.wasm`
+- `vendor/mediainfo-fichegen/MediaInfoModule.wasm`
+
+Le script embarqué dans `index.html` utilise d'abord ce loader vendor, puis fallback CDN seulement si nécessaire.
+
 ## Tests
 
 ### Front / statique
@@ -101,13 +113,46 @@ PYTHONPATH=api pytest -q api/tests
 ### Test manuel (flux natif attendu)
 1. Ouvrir `http://localhost:${WEB_PORT:-8088}/lacale-helper-v2/`.
 2. Déposer une vidéo (`.mkv/.mp4/.avi`) dans l'UI principale (pas dans un panneau custom).
-3. Vérifier l'overlay `Analyse en cours` puis la bascule vers l'écran TMDB (`Recherche TMDB` / `Sélectionnez le film ou la série`).
+3. Vérifier l'overlay `Analyse en cours`, puis sa disparition avant/pendant la modale “Coller un NFO”.
 4. Vérifier qu'il n'y a **pas** de toast rouge `module MediaInfo ... indisponible` en mode WASM actif.
-5. Sélectionner un résultat TMDB et vérifier que les champs se remplissent comme le flux d'origine.
-6. Vérifier que le panneau fallback JSON/NFO **n'est pas visible** en cas de succès d'injection.
+5. Vérifier le parcours natif: ouverture Coller un NFO -> validation -> bascule écran TMDB (`Recherche TMDB` / `Sélectionnez le film ou la série`).
+6. Sélectionner un résultat TMDB et vérifier que les champs se remplissent comme le flux d'origine.
+7. Vérifier que le panneau fallback JSON/NFO **n'est pas visible** en cas de succès d'injection.
+
+### Test manuel GH Pages
+1. Ouvrir `https://qaquka.github.io/lacale-helper-v2/`.
+2. Déposer une vidéo -> overlay -> pas de toast rouge.
+3. Vérifier le passage par “Coller un NFO” puis bascule sur l'écran TMDB natif.
 
 ---
 
 ## Note importante
 - **Aucun patch manuel du bundle minifié** `assets/index-*.js` pour cette feature.
 - L’intégration front API est faite via `index.html` (scripts encapsulés IIFE), pour éviter les collisions de symboles et les écrans noirs.
+
+
+## GitHub Pages deployment checklist
+
+Le workflow `.github/workflows/pages.yml` déploie maintenant l'artifact `dist/` avec:
+1. `npm ci`
+2. `npm run build`
+3. `npm run test:dist-vendor` (échoue si `dist/vendor/mediainfo-fichegen/*` manque)
+4. `upload-pages-artifact` puis `deploy-pages`
+
+### Paramètres GitHub Pages (obligatoire)
+- Aller dans **Settings → Pages**.
+- Source = **GitHub Actions** (et non "Deploy from a branch").
+- Vérifier que la branche de push déclenchant le workflow est bien `deploy` ou `main`.
+
+### Vérification rapide après déploiement
+Ouvrir DevTools (Network + Console) sur `https://qaquka.github.io/lacale-helper-v2/` puis vérifier:
+
+```bash
+curl -I https://qaquka.github.io/lacale-helper-v2/vendor/mediainfo-fichegen/MediaInfoWasm.js
+curl -I https://qaquka.github.io/lacale-helper-v2/vendor/mediainfo-fichegen/MediaInfoModule.wasm
+```
+
+Attendu:
+- HTTP `200` pour le loader JS et au moins un `.wasm`.
+- Console contient `LC_MEDIAINFO_WASM_MODE_V5 commit ...`.
+- Badge discret `WASM V5` visible en bas à droite.
