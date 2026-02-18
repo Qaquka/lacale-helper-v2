@@ -72,6 +72,7 @@
         const ALLOWED = ['.mkv', '.mp4', '.avi'];
         const MEDIAINFO_CDN_ESM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/esm-bundle/index.min.js';
         const MEDIAINFO_CDN_WASM_URL = 'https://cdn.jsdelivr.net/npm/mediainfo.js@0.3.6/dist/MediaInfoModule.wasm';
+        const DEBUG = localStorage.getItem('LC_DEBUG_WASM') === '1';
 
         let wasmModeEnabled = false;
         let mediaInfoAnalyzer = null;
@@ -79,6 +80,13 @@
         let analyzingOverlay = null;
 
         function sleep(ms){ return new Promise((r) => setTimeout(r, ms)); }
+
+
+        function dbg(...args) {
+          if (!DEBUG) return;
+          console.log('[LC_WASM]', ...args);
+        }
+
 
         async function waitFor(fn, timeout = 4000, step = 50) {
           const t0 = performance.now();
@@ -446,14 +454,98 @@
           }
         }
 
-        async function injectNfoNative(nfoText) {
-          const open = findClickableByText(/coller un nfo/i);
+        function humanFileSize(bytes) {
+          if (!Number.isFinite(bytes) || bytes <= 0) return '';
+          const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+          let value = bytes;
+          let i = 0;
+          while (value >= 1024 && i < units.length - 1) {
+            value /= 1024;
+            i += 1;
+          }
+          const decimals = value >= 100 || i === 0 ? 0 : 1;
+          return `${value.toFixed(decimals)} ${units[i]}`;
+        }
+
+        function normalizeReleaseName(input) {
+          return String(input || '').replace(/\.[^.]+$/, '').replace(/[._]+/g, ' ').trim();
+        }
+
+        function detectReleaseGroup(fileName, generalTitle) {
+          const haystacks = [fileName, generalTitle].filter(Boolean).map((s) => String(s));
+          for (const text of haystacks) {
+            const bracket = text.match(/\[([A-Za-z0-9._-]{2,})\](?:\s*$|\s)/);
+            if (bracket) return bracket[1];
+            const codecGroup = text.match(/(?:x264|x265|hevc|h264|h265)[^\w-]*-([A-Za-z0-9._-]{2,})/i);
+            if (codecGroup) return codecGroup[1];
+            const tail = text.match(/-([A-Za-z0-9._-]{2,})\s*$/);
+            if (tail) return tail[1];
+          }
+          return '';
+        }
+
+        function computeTitleCandidate(fileName, generalTitle) {
+          const raw = (generalTitle && String(generalTitle).trim()) || normalizeReleaseName(fileName);
+          let cleaned = raw
+            .replace(/\b(2160p|1080p|720p|4k|uhd)\b/ig, ' ')
+            .replace(/\b(x264|x265|h264|h265|hevc|avc)\b/ig, ' ')
+            .replace(/\b(hdr10\+?|hdr|dv|dolby\s*vision)\b/ig, ' ')
+            .replace(/\b(bluray|blu-ray|brrip|bdrip|webrip|web-dl|hdtv|remux|dvdrip)\b/ig, ' ')
+            .replace(/\b(ddp|ac3|eac3|dts(?:-hd)?|atmos|truehd|aac)\b/ig, ' ')
+            .replace(/\b(multi|vostfr|truefrench|french|eng|fr)\b/ig, ' ')
+            .replace(/-[A-Za-z0-9._-]{2,}\s*$/g, ' ')
+            .replace(/[._]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!cleaned) cleaned = normalizeReleaseName(fileName);
+          return cleaned;
+        }
+
+        function findFieldBySemantic(regex) {
+          const labels = [...document.querySelectorAll('label,div,span,p')]
+            .filter((el) => isVisible(el) && regex.test((el.textContent || '').toLowerCase()));
+          for (const label of labels) {
+            const htmlFor = label.getAttribute && label.getAttribute('for');
+            if (htmlFor) {
+              const direct = document.getElementById(htmlFor);
+              if (direct && isVisible(direct)) return direct;
+            }
+            const near = label.closest('div,section,form,fieldset') || document;
+            const field = near.querySelector('input:not([type="file"]),textarea');
+            if (field && isVisible(field) && !field.disabled) return field;
+          }
+          const byPlaceholder = [...document.querySelectorAll('input:not([type="file"]),textarea')]
+            .find((el) => isVisible(el) && regex.test((el.placeholder || '').toLowerCase()) && !el.disabled);
+          return byPlaceholder || null;
+        }
+
+        function fillFieldIfFound(regex, value, tag) {
+          if (!value) return false;
+          const field = findFieldBySemantic(regex);
+          if (!field) {
+            dbg('field-not-found', tag);
+            return false;
+          }
+          setNativeValue(field, value);
+          dbg('field-filled', tag, value);
+          return true;
+        }
+
+        function extractGeneralTrack(mediaInfoObject) {
+          const tracks = mediaInfoObject?.media?.track || [];
+          return tracks.find((t) => String(t?.['@type'] || '').toLowerCase() === 'general') || {};
+        }
+
+        async function injectNfoNativeV7(nfoText) {
+          dbg('inject-start');
+          const open = findClickableByText(/coller\s+un\s+nfo/i);
           if (!open) return { ok: false, why: "bouton 'Coller un NFO' introuvable" };
           open.click();
+          dbg('inject-open-clicked');
 
           const modal = await waitFor(
-            () => document.querySelector('[role="dialog"],.modal,[data-modal]') || document.body,
-            3000
+            () => [...document.querySelectorAll('[role="dialog"],.modal,[data-modal],form')].find((el) => isVisible(el)) || null,
+            4000
           );
           if (!modal) return { ok: false, why: 'dialog Coller un NFO introuvable' };
 
@@ -461,37 +553,82 @@
             const fields = [...modal.querySelectorAll('textarea,[contenteditable="true"],input[type="text"]')]
               .filter((el) => isVisible(el) && !el.disabled);
             return fields[0] || null;
-          }, 3000);
+          }, 4000);
           if (!targetField) return { ok: false, why: 'textarea NFO introuvable' };
 
           setNativeValue(targetField, nfoText);
+          dbg('inject-textarea-filled');
 
-          const validate =
-            findClickableByText(/valider/i, modal) ||
-            findClickableByText(/importer/i, modal) ||
-            findClickableByText(/analyser/i, modal) ||
-            findClickableByText(/continuer/i, modal) ||
-            findClickableByText(/g[ée]n[ée]rer/i, modal);
-          if (!validate) return { ok: false, why: 'bouton de validation introuvable' };
-          validate.click();
+          let validationTriggered = false;
+          const modalForm = targetField.closest('form') || modal.querySelector('form');
+          if (modalForm) {
+            if (typeof modalForm.requestSubmit === 'function') modalForm.requestSubmit();
+            else modalForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            validationTriggered = true;
+            dbg('inject-form-submitted');
+          } else {
+            const submitBtn = [...modal.querySelectorAll('button,input[type="submit"]')].find((el) => isVisible(el) && !el.disabled && (el.type === 'submit' || el.getAttribute('type') === 'submit'));
+            const textBtn =
+              submitBtn ||
+              findClickableByText(/valider|importer|analyser|continuer|g[ée]n[ée]rer/i, modal);
+            if (!textBtn) return { ok: false, why: 'bouton de validation introuvable' };
+            textBtn.click();
+            validationTriggered = true;
+            dbg('inject-validate-clicked');
+          }
 
-          return { ok: true };
+          if (!validationTriggered) return { ok: false, why: 'validation non déclenchée' };
+
+          await waitFor(() => !isVisible(modal) || !!findTmdbNode(), 2500);
+          return { ok: true, validated: true };
         }
 
-        async function detectAndScrollTmdb() {
-          const tmdbNode = await waitFor(() => {
-            const nodes = [...document.querySelectorAll('h1,h2,h3,div,span,label,p,input,button')];
-            return nodes.find((n) => {
-              const txt = (n.textContent || n.getAttribute?.('placeholder') || '').toLowerCase();
-              return txt.includes('recherche tmdb') || txt.includes('sélectionnez le film') || txt.includes('selectionnez le film') || txt.includes('tmdb');
-            }) || null;
-          }, 4500);
+        function findTmdbNode() {
+          const nodes = [...document.querySelectorAll('h1,h2,h3,div,span,label,p,input,button')];
+          return nodes.find((n) => {
+            const txt = (n.textContent || n.getAttribute?.('placeholder') || '').toLowerCase();
+            return txt.includes('recherche tmdb') || txt.includes('sélectionnez le film') || txt.includes('selectionnez le film') || txt.includes('tmdb');
+          }) || null;
+        }
+
+        function forceGoTmdb() {
+          const candidate = findClickableByText(/suivant|continuer|tmdb|rechercher/i);
+          if (candidate) {
+            candidate.click();
+            dbg('force-go-tmdb-click');
+            return true;
+          }
+          return false;
+        }
+
+        async function prefillTmdbTitle(titleCandidate) {
+          if (!titleCandidate) return false;
+          const input = await waitFor(() => {
+            const byLabel = findFieldBySemantic(/tmdb|recherche|titre/);
+            if (byLabel && isVisible(byLabel)) return byLabel;
+            const visibleInput = [...document.querySelectorAll('input[type="text"],input:not([type]),input[type="search"]')]
+              .find((el) => isVisible(el) && !el.disabled);
+            return visibleInput || null;
+          }, 2500);
+          if (!input) return false;
+          setNativeValue(input, titleCandidate);
+          dbg('tmdb-prefilled', titleCandidate);
+          return true;
+        }
+
+        async function detectAndScrollTmdb(titleCandidate) {
+          let tmdbNode = await waitFor(() => findTmdbNode(), 3500);
+          if (!tmdbNode) {
+            forceGoTmdb();
+            tmdbNode = await waitFor(() => findTmdbNode(), 2500);
+          }
 
           if (tmdbNode && tmdbNode.scrollIntoView) {
             tmdbNode.scrollIntoView({ behavior: 'smooth', block: 'start' });
             if (typeof tmdbNode.focus === 'function') tmdbNode.focus({ preventScroll: true });
           }
 
+          await prefillTmdbTitle(titleCandidate);
           return !!tmdbNode;
         }
 
@@ -507,20 +644,28 @@
 
           try {
             const mediaInfoObject = await analyzeWithWasm(file);
-            const nfoText = renderMediaInfoText(mediaInfoObject?.media?.track || []);
+            const tracks = mediaInfoObject?.media?.track || [];
+            const generalTrack = extractGeneralTrack(mediaInfoObject);
+            const nfoText = renderMediaInfoText(tracks);
+            const sizeHuman = humanFileSize(file.size);
+            const sourceDetected = detectReleaseGroup(file.name || '', generalTrack.Title || generalTrack.Movie || '');
+            const titleCandidate = computeTitleCandidate(file.name || '', generalTrack.Title || generalTrack.Movie || '');
+            dbg('metadata', { sizeHuman, sourceDetected, titleCandidate, origin });
 
-            // Laisser l'UI native visible avant ouverture de la modale Coller un NFO.
+            fillFieldIfFound(/taille|file size|size/i, sizeHuman, 'size');
+            fillFieldIfFound(/source|team|release/i, sourceDetected, 'source');
+
             setOverlayVisible(false);
 
-            const injected = await injectNfoNative(nfoText);
+            const injected = await injectNfoNativeV7(nfoText);
             if (!injected.ok) {
               showFallbackPanel(mediaInfoObject, nfoText, injected.why);
               return;
             }
 
             hideFallbackPanel();
-            setStatus(`${__LC_WASM_MODE_SIGNATURE}: analyse OK (${origin}), injection native validée.`);
-            await detectAndScrollTmdb(); // best effort, non bloquant
+            setStatus(`${__LC_WASM_MODE_SIGNATURE}: analyse OK (${origin}), validation native déclenchée.`);
+            await detectAndScrollTmdb(titleCandidate); // best effort, non bloquant
             hideMediaInfoWarnings();
           } catch (err) {
             showFallbackPanel({}, '', `erreur WASM: ${err.message || err}`);
